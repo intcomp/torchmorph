@@ -1,0 +1,15 @@
+-r requirements-test.txt
+
+scipy>=1.16.2
+
+# Code style / linting
+pre-commit
+black>=23.0
+isort>=5.12
+flake8>=6.0
+
+# Build & packaging
+setuptools>=65.0
+wheel>=0.40
+ninja>=1.11  # optional, speeds up torch extension builds
+

@@ -1,0 +1,57 @@
+# -----------------------------
+# Python / PyTorch / CUDA build
+# -----------------------------
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+*.pyo
+*.dll
+*.dylib
+
+# Build and dist artifacts
+/build/
+*/build/
+dist/
+*.egg-info/
+.eggs/
+MANIFEST
+
+# Torch / CUDA temporary files
+*.pt
+*.pth
+*.log
+*.o
+*.obj
+*.a
+*.lib
+*.exp
+*.pdb
+*.cu.o
+*.cpp.o
+*.cu.d
+*.cpp.d
+
+# IDEs and editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environments
+.env
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+*.ipynb
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+

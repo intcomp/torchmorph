@@ -1,0 +1,19 @@
+[tool.black]
+line-length = 100
+target-version = ["py38", "py39", "py310", "py311"]
+skip-string-normalization = true
+
+[tool.isort]
+profile = "black"
+line_length = 100
+known_first_party = ["torchmorph"]
+skip = ["build", "dist", "__pycache__"]
+
+[tool.flake8]
+max-line-length = 100
+extend-ignore = ["E203", "W503"]
+
+[tool.pytest.ini_options]
+addopts = "-v"
+testpaths = ["test"]
+
