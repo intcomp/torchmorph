@@ -14,6 +14,10 @@ def test_distance_transform():
     y = tm.distance_transform(x)
 
     expected = x * 2
+    # here we compare the output, i.e. results of our distance transform,
+    # with the expected output, e.g. the results of scipy.ndimage.distance_transform_edt
+    # currently, our implementation simply multiplies the input by 2,
+    # but eventually we have to implement the full algorithm.
     torch.testing.assert_close(y, expected)
     assert y.device.type == "cuda"
     assert y.shape == x.shape

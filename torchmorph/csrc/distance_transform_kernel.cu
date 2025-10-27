@@ -1,5 +1,8 @@
 #include <torch/extension.h>
 
+// distance transform: https://en.wikipedia.org/wiki/Distance_transform
+// https://docs.scipy.org/doc/scipy/reference/generated/scipy.ndimage.distance_transform_edt.html
+
 __global__ void distance_transform_kernel(const float* in, float* out, int64_t N) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < N) {
