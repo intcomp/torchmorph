@@ -1,11 +1,11 @@
 #include <torch/extension.h>
 #include <vector>
 
-// --- Kernel 1: 二值化内核 ---
-/**
- * @brief 对输入张量进行逐元素二值化。
- * @details 这是一个简单的并行操作。它将输入张量中的背景像素（值<0.5）设置为0，
- *          并将前景像素（值>=0.5）设置为一个极大的值（1e20f），这在距离变换的上下文中
+// --- Kernel 1: 二值化内核  ---
+/*
+ * @brief 对输入张量进行逐元素二值化，为距离变换做准备。
+ * @details 将前景点(in[idx] == 0)的初始距离设为0，
+ *          背景点的初始距离设为一个极大值(1e20f)，这在距离变换的上下文中
  *          可以被认为是无穷大。
  * @param in 输入张量的数据指针。
  * @param out 输出张量的数据指针。
@@ -14,7 +14,9 @@
 __global__ void binarize_kernel(const float* in, float* out, int64_t N) {
     int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < N) {
-        out[idx] = (in[idx] < 0.5f) ? 0.0f : 1e20f;
+        // 如果输入像素为0，则为前景点，其距离为0。
+        // 如果输入像素非0，则为背景点，其初始距离为无穷大。
+        out[idx] = (in[idx] == 0.0f) ? 0.0f : 1e20f;
     }
 }
 
