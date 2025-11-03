@@ -11,7 +11,7 @@
  * @param out 输出张量的数据指针。
  * @param N 张量中的元素总数。
  */
-__global__ void binarize_kernel(const float* in, float* out, int64_t N) {
+__global__ void initialize_distance_kernel(const float* in, float* out, int64_t N) {
     int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < N) {
         // 如果输入像素为0，则为前景点，其距离为0。
@@ -140,7 +140,7 @@ __global__ void sqrt_kernel(float* data, int64_t N) {
  * @param input 一个N维的PyTorch张量，第一个维度被视为批处理（batch）维度。
  * @return 一个与输入形状相同的张量，包含每个点到最近前景点（值>=0.5）的欧氏距离。
  */
-torch::Tensor distance_transform_cuda(torch::Tensor input) {
+std::tuple<torch::Tensor, torch::Tensor> distance_transform_cuda(torch::Tensor input) {
     auto original_input = input;
     
     // --- 预处理: 统一输入格式 ---
@@ -153,7 +153,6 @@ torch::Tensor distance_transform_cuda(torch::Tensor input) {
     TORCH_CHECK(input.is_cuda(), "Input must be on a CUDA device.");
     TORCH_CHECK(input.is_contiguous(), "Input tensor must be contiguous.");
 
-    if (input.numel() == 0) { return torch::empty_like(original_input); }
     
     // --- 获取张量元数据 ---
     const auto ndim = input.dim();
@@ -161,39 +160,45 @@ torch::Tensor distance_transform_cuda(torch::Tensor input) {
     const auto batch_size = input.size(0);
     const int64_t N_total = input.numel();
     
-    auto shape_vec = input.sizes().vec();
+    auto shape = input.sizes().vec();
+    auto index_shape = shape;
+    index_shape.push_back(sample_ndim);
+
     auto strides_vec = input.strides().vec();
     
     // --- 内存分配: 使用Ping-Pong缓冲策略 ---
     // 分配两个缓冲区，在处理每个维度时交替作为输入和输出，避免原地读写冲突。
-    auto output = torch::empty_like(input);
-    auto buffer = (sample_ndim > 0) ? torch::empty_like(input) : output;
+    auto distance = torch::zeros_like(input);
+    auto index = torch::zeros(index_shape);
+    auto buffer = (sample_ndim > 0) ? torch::empty_like(input) : distance;
+
+    if (input.numel() == 0) { return std::make_tuple(distance, index); }
 
     //二值化
     int threads = 256; // 定义每个线程块的线程数
     int blocks = (N_total + threads - 1) / threads; // 计算启动的线程块数
-    binarize_kernel<<<blocks, threads>>>(input.data_ptr<float>(), buffer.data_ptr<float>(), N_total);
+    initialize_distance_kernel<<<blocks, threads>>>(input.data_ptr<float>(), buffer.data_ptr<float>(), N_total);
 
     //循环调用 edt_1d_pass_sq_kernel
     // 将shape和strides信息从CPU内存拷贝到GPU内存，以便内核可以访问
     int64_t *shape_gpu, *strides_gpu;
     cudaMalloc(&shape_gpu, ndim * sizeof(int64_t));
     cudaMalloc(&strides_gpu, ndim * sizeof(int64_t));
-    cudaMemcpy(shape_gpu, shape_vec.data(), ndim * sizeof(int64_t), cudaMemcpyHostToDevice);
+    cudaMemcpy(shape_gpu, shape.data(), ndim * sizeof(int64_t), cudaMemcpyHostToDevice);
     cudaMemcpy(strides_gpu, strides_vec.data(), ndim * sizeof(int64_t), cudaMemcpyHostToDevice);
 
     torch::Tensor current_input = buffer;
-    torch::Tensor current_output = output;
+    torch::Tensor current_output = distance;
 
     // 遍历所有空间维度
     for (int32_t d_sample = 0; d_sample < sample_ndim; ++d_sample) {
         // 为当前处理的维度计算启动内核所需的参数
         int64_t num_slices_per_sample = 1;
         for(int i = 0; i < sample_ndim; ++i) { 
-            if (i != d_sample) num_slices_per_sample *= shape_vec[i + 1]; 
+            if (i != d_sample) num_slices_per_sample *= shape[i + 1]; 
         }
         int64_t total_slices = batch_size * num_slices_per_sample;
-        int64_t slice_len = shape_vec[d_sample + 1];
+        int64_t slice_len = shape[d_sample + 1];
         
         // 动态设置线程数和共享内存大小
         int threads_pass = (slice_len > 0 && slice_len < 256) ? slice_len : 256;
@@ -216,12 +221,12 @@ torch::Tensor distance_transform_cuda(torch::Tensor input) {
     sqrt_kernel<<<blocks, threads>>>(current_input.data_ptr<float>(), N_total);
     
     // 如果最后一轮的输出不在我们期望的 output 张量里，就做一次拷贝
-    if (current_input.data_ptr() != output.data_ptr()){
-        output.copy_(current_input);
+    if (current_input.data_ptr() != distance.data_ptr()){
+        distance.copy_(current_input);
     }
     
     // 如果最初没有批处理维度，则移除我们添加的维度
-    if (had_no_batch_dim) { output = output.squeeze(0); }
+    if (had_no_batch_dim) { distance = distance.squeeze(0); }
     
-    return output;
+    return std::make_tuple(distance, index);
 }

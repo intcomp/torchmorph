@@ -73,13 +73,14 @@ def test_batch_processing(input_numpy, request):
 
     print(f"\n\n--- 正在运行测试: {request.node.callspec.id} ---")
     print(f"输入张量形状: {x.shape}")
-    y_cuda = tm.distance_transform(x.clone())
+    dist_cuda, idx_cuda = tm.distance_transform(x.clone())
+    print(f"Output index shape: {idx_cuda.shape}.")
     
     y_ref_numpy = batch_distance_transform_edt(x_numpy_contiguous)
     y_ref = torch.from_numpy(y_ref_numpy).to(torch.float32).cuda()
     
-    assert y_cuda.shape == y_ref.shape, f"形状不匹配! CUDA输出: {y_cuda.shape}, SciPy应为: {y_ref.shape}"
+    assert dist_cuda.shape == y_ref.shape, f"形状不匹配! CUDA输出: {dist_cuda.shape}, SciPy应为: {y_ref.shape}"
     print("CUDA 和 SciPy 输出形状匹配。")
     
-    torch.testing.assert_close(y_cuda, y_ref, atol=1e-3, rtol=1e-3)
+    torch.testing.assert_close(dist_cuda, y_ref, atol=1e-3, rtol=1e-3)
     print("--- 断言通过 (数值接近) ---")
