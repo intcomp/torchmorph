@@ -6,20 +6,32 @@ import torchmorph as tm
 
 # 辅助函数：调用 SciPy 并处理格式
 def batch_scipy_edt_with_indices(batch_numpy: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    is_single_sample = batch_numpy.ndim <= 2
-    if is_single_sample:
-        batch_numpy = batch_numpy[np.newaxis, ...]
+
+    
+    input_is_1d_batch = (batch_numpy.ndim == 2) 
+    input_is_single_sample_no_batch = (batch_numpy.ndim == 1)
+
+    if input_is_single_sample_no_batch:
+        batch_numpy = batch_numpy[np.newaxis, ...] # (L) -> (1, L)
+
+    
     dist_results, indices_results = [], []
     for sample in batch_numpy:
         dist, indices = scipy_edt(sample, return_indices=True, return_distances=True)
         dist_results.append(dist)
         indices_results.append(indices)
+        
     output_dist = np.stack(dist_results, axis=0)
     output_indices = np.stack(indices_results, axis=0)
+    
+    # indices shape fix: (N, ndim_sample, ...) -> (N, ..., ndim_sample)
+    # 对于 1D: (N, 1, L) -> (N, L, 1)
     output_indices = np.moveaxis(output_indices, 1, -1)
-    if is_single_sample:
+    
+    if input_is_single_sample_no_batch:
         output_dist = output_dist.squeeze(0)
         output_indices = output_indices.squeeze(0)
+        
     return output_dist, output_indices
 
 # 用例定义 
