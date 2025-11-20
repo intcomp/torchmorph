@@ -18,5 +18,5 @@ addopts = "-v --import-mode=importlib"
 testpaths = ["test"]
 
 [build-system]
-requires = ["setuptools>=61.0", "wheel", "torch"]
+requires = ["setuptools>=61.0", "wheel", "torch", "numpy"]
 build-backend = "setuptools.build_meta"
