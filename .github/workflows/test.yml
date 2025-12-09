@@ -19,4 +19,4 @@ jobs:
           - run: |
               ORIGINAL=$(pwd)
               cd /tmp
-              pytest $ORIGINAL/test
+              CUDA_HOME=/usr/local/cuda pytest $ORIGINAL/test
