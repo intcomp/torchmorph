@@ -13,10 +13,11 @@ jobs:
       steps:
           - uses: actions/checkout@v4
           - run: |
+              CUDA_HOME=/usr/local/cuda
               pip install -r requirements-dev.txt --break-system-packages --user
               pip uninstall torchmorph --yes --break-system-packages
               python setup.py install --user
           - run: |
               ORIGINAL=$(pwd)
               cd /tmp
-              CUDA_HOME=/usr/local/cuda pytest $ORIGINAL/test
+              pytest $ORIGINAL/test
