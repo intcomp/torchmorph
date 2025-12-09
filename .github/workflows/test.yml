@@ -16,7 +16,7 @@ test:
         - uses: actions/checkout@v4
         - run: |
             pip install -r requirements-dev.txt --break-system-packages --user
-            pip uninstall torchmorph --yes
+            pip uninstall torchmorph --yes --break-system-packages
             python setup.py install --user
         - run: |
             ORIGINAL=$(pwd)
