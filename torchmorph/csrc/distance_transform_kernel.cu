@@ -293,7 +293,7 @@ std::tuple<torch::Tensor, torch::Tensor> distance_transform_cuda(torch::Tensor i
     // Assumption: all dims except dim 0 (Batch) are spatial.
     
     const int ndim = input.dim(); 
-    // If ndim=1, assume (L) → sample_ndim=1
+    // If ndim=1, assume (L) -> sample_ndim=1
     // If ndim=4 (B, C, H, W), sample_ndim=3 (C,H,W treated as spatial? Channels often processed independently)
     // Correction: classical EDT usually runs on (H,W) or (D,H,W).
     // If channels exist, typically each channel is processed independently.
