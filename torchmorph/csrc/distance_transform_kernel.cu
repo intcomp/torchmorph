@@ -6,13 +6,13 @@
 #include <cuda_runtime.h>
 
 // ------------------------------------------------------------------
-// 配置常量
+// Configuration Constants
 // ------------------------------------------------------------------
 #define INF_VAL 1e8f
 #define MAX_THREADS 1024
-// Shared Memory 限制: 48KB 一般安全。
-// 每个像素需要: float(val) + int(idx1) + int(idx2) = 12 bytes
-// 4096 * 12 = 48KB.
+// Shared memory limit: typically 48 KB.
+// Each pixel requires: float(value) + int(idx1) + int(idx2) = 12 bytes.
+// 4096 * 12 = 48 KB.
 #define SMEM_LIMIT_ELEMENTS 4096 
 
 // ------------------------------------------------------------------
@@ -21,7 +21,7 @@
 
 __device__ __forceinline__ float sqr(float x) { return x * x; }
 
-// 计算 JFA 代价: (q - p)^2 + weight[p]
+// Compute the JFA cost: (q - p)^2 + weight[p]
 __device__ __forceinline__ float compute_cost(int q, int p, float val_p) {
     if (p < 0) return INF_VAL; 
     return sqr((float)q - (float)p) + val_p;
@@ -30,25 +30,25 @@ __device__ __forceinline__ float compute_cost(int q, int p, float val_p) {
 // ------------------------------------------------------------------
 // JFA Core Logic (Device Only)
 // ------------------------------------------------------------------
-// 核心 JFA 逻辑，与数据位置无关 (Shared 或 Global 均通用)
+// Core JFA logic, independent of data location (works with both Shared and Global memory).
 __device__ void run_jfa_core(
     int N,
     int tid,
-    const float* __restrict__ vals,  // 输入权重 (只读)
+    const float* __restrict__ vals,  // input weight (read-only)
     int* __restrict__ idx_curr,      // Ping-Pong Buffer A
     int* __restrict__ idx_next       // Ping-Pong Buffer B
 ) {
-    // 1. 初始化: 根据 vals 决定是否是有效源点
+    // 1. Initialization: determine whether each pixel is a valid source based on vals.
     for (int i = tid; i < N; i += blockDim.x) {
         if (vals[i] >= INF_VAL * 0.9f) {
-            idx_curr[i] = -1; // 背景
+            idx_curr[i] = -1; // background
         } else {
-            idx_curr[i] = i;  // 物体/源点，初始索引指向自己
+            idx_curr[i] = i;  // For each object/source point, the initial index points to itself.
         }
     }
     __syncthreads();
 
-    // 2. 迭代传播 (Step = 1, 2, 4, ... < N)
+    // 2. Iterative Propagation (Step = 1, 2, 4, ... < N)
     int* idx_in = idx_curr;
     int* idx_out = idx_next;
 
@@ -57,7 +57,7 @@ __device__ void run_jfa_core(
             int my_best_p = idx_in[i];
             float min_cost = INF_VAL;
 
-            // 检查自己当前的最优解
+            // Check its current best solution
             if (my_best_p != -1) {
                 min_cost = compute_cost(i, my_best_p, vals[my_best_p]);
             }
@@ -97,7 +97,7 @@ __device__ void run_jfa_core(
         __syncthreads();
     }
 
-    // 3. 确保最终结果在 idx_curr (如果循环结束时在 next，则拷回)
+    // 3. Ensure the final result is stored in idx_curr (if the loop ends with idx_next, copy it back).
     if (idx_in != idx_curr) {
         for (int i = tid; i < N; i += blockDim.x) {
             idx_curr[i] = idx_next[i];
@@ -109,70 +109,71 @@ __device__ void run_jfa_core(
 // ------------------------------------------------------------------
 // Kernel 1: Shared Memory JFA (Fast Path)
 // ------------------------------------------------------------------
-// 模板参数 NDim: 如果 > 0，编译器会展开循环优化。
-// 参数 runtime_ndim: 如果 NDim == 0 (Default case)，使用该参数作为维度。
+// Template parameter NDim: when NDim > 0, the compiler performs loop unrolling optimizations.
+// Runtime parameter runtime_ndim: when NDim == 0 (default behavior), this parameter specifies the dimension.
 template <bool IsFinal, int NDim>
 __global__ void edt_kernel_shared(
-    const float* __restrict__ in_data,       // 输入 Dist^2
-    const int32_t* __restrict__ in_indices,  // 输入 Indices
-    float* __restrict__ out_dist,            // 输出 Dist (IsFinal ? sqrt : sqr)
-    int32_t* __restrict__ out_indices,       // 输出 Indices
-    int64_t L,                               // 当前维度的长度
-    int64_t total_elements,                  // 总像素数
-    int runtime_ndim                         // 运行时维度 (fallback)
+    const float* __restrict__ in_data,       // input Dist^2
+    const int32_t* __restrict__ in_indices,  // output Indices
+    float* __restrict__ out_dist,            // output Dist (IsFinal ? sqrt : sqr)
+    int32_t* __restrict__ out_indices,       // output Indices
+    int64_t L,               // Size of the current dimension
+    int64_t total_elements,  // Total number of elements
+    int runtime_ndim         // Runtime dimension (used as fallback)
 ) {
-    // 确定实际维度
+    // Determine the effective dimension
     const int D = (NDim > 0) ? NDim : runtime_ndim;
 
-    // 计算行偏移
+    // Compute row offset
     int64_t row_idx = blockIdx.x;
     int64_t offset = row_idx * L;
-    
+
     if (offset >= total_elements) return;
 
-    // Shared Memory 布局
+    // Shared memory layout
     extern __shared__ char s_buffer[];
     float* s_vals = (float*)s_buffer;
     int*   s_idx1 = (int*)(s_vals + L);
     int*   s_idx2 = (int*)(s_idx1 + L);
 
-    // 1. 加载 Dist 到 Shared Memory
+    // 1. Load distances into Shared Memory
     for (int i = threadIdx.x; i < L; i += blockDim.x) {
         s_vals[i] = __ldg(&in_data[offset + i]);
     }
     __syncthreads();
 
-    // 2. 运行 JFA 核心
+    // 2. Run the core JFA logic
     run_jfa_core(L, threadIdx.x, s_vals, s_idx1, s_idx2);
-    
-    // 3. 写回结果
+
+    // 3. Write back the results
     for (int q = threadIdx.x; q < L; q += blockDim.x) {
-        int p = s_idx1[q]; // 最近点在当前行内的局部索引 (0..L-1)
+        int p = s_idx1[q];  // Nearest point (local index within 0..L-1)
         float dist_val;
 
-        // 计算新距离
+        // Compute updated distance
         if (p != -1) {
             float dist_sq = sqr((float)q - (float)p) + s_vals[p];
             dist_val = IsFinal ? sqrtf(dist_sq) : dist_sq;
         } else {
+            // No source point found (e.g., entire row is background)
             dist_val = IsFinal ? INF_VAL : sqr(INF_VAL);
-            p = 0; // 防止越界，随便指一个
+            p = 0;  // Prevent out-of-bounds access
         }
         out_dist[offset + q] = dist_val;
 
-        // 索引传播: Copy Vector [D]
+        // Propagate indices: copy a vector of size [D]
         if (p != -1) {
             int64_t src_offset = (offset + p) * D;
             int64_t dst_offset = (offset + q) * D;
-            
-            // 如果 NDim > 0，这里会完全展开，非常快
+
+            // When NDim > 0, this loop is fully unrolled by the compiler
             for (int d = 0; d < D; ++d) {
                 out_indices[dst_offset + d] = in_indices[src_offset + d];
             }
         } else {
-             // 找不到源点（全图都是背景的情况）
-             int64_t dst_offset = (offset + q) * D;
-             for (int d = 0; d < D; ++d) out_indices[dst_offset + d] = 0;
+            // Fallback: no source available
+            int64_t dst_offset = (offset + q) * D;
+            for (int d = 0; d < D; ++d) out_indices[dst_offset + d] = 0;
         }
     }
 }
@@ -180,7 +181,7 @@ __global__ void edt_kernel_shared(
 // ------------------------------------------------------------------
 // Kernel 2: Global Memory JFA (Fallback Path)
 // ------------------------------------------------------------------
-// 逻辑同上，只是用 Global Memory 做 Ping-Pong Buffer
+// Same logic as above, but uses Global Memory as the ping-pong buffer
 template <bool IsFinal, int NDim>
 __global__ void edt_kernel_global(
     const float* __restrict__ in_data,
@@ -200,14 +201,14 @@ __global__ void edt_kernel_global(
     
     if (offset >= total_elements) return;
 
-    // 指向 Global Memory 的指针
+    // Pointers to Global Memory
     int* g_idx1 = global_buffer_1 + offset;
     int* g_idx2 = global_buffer_2 + offset;
     
-    // 1. & 2. 运行 JFA (直接在 Global Mem 上读写)
+    // 1. & 2. Run the JFA core (operating directly on Global Memory)
     run_jfa_core(L, threadIdx.x, in_data + offset, g_idx1, g_idx2);
 
-    // 3. 写回结果
+    // 3. Write back results
     for (int q = threadIdx.x; q < L; q += blockDim.x) {
         int p = g_idx1[q];
         float dist_val;
@@ -236,10 +237,11 @@ __global__ void edt_kernel_global(
     }
 }
 
+
 // ------------------------------------------------------------------
 // Kernel 3: Initialize Indices
 // ------------------------------------------------------------------
-// 初始化索引张量为网格坐标
+// Initialize index tensor as grid coordinates
 // indices shape: (..., D)
 __global__ void init_indices_kernel(
     int32_t* indices, 
@@ -250,24 +252,24 @@ __global__ void init_indices_kernel(
     int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= total_pixels) return;
 
-    // 反解坐标 (Unravel Index)
-    // idx 是每个像素的 flat index
-    // 我们需要计算它在 spatial_shape 中的坐标
+    // Unravel Index
+    // idx is the flat index of each pixel
+    // We need to compute its coordinate in spatial_shape
     
     int64_t temp = idx;
-    // 使用本地寄存器数组避免多次全局内存读取 (假设最大 10 维)
+    // Use local register array to avoid repeated global memory reads (assume max 10 dims)
     int32_t coords[10]; 
 
-    // 假设 spatial_shape 是 [D0, D1, D2]
-    // 倒序计算除余
+    // Example: spatial_shape = [D0, D1, D2]
+    // compute by modulo from last dimension
     for (int d = NDim - 1; d >= 0; --d) {
         int64_t dim_size = shape_ptr[d];
         coords[d] = temp % dim_size;
         temp /= dim_size;
     }
 
-    // 写入 Global Memory
-    // Indices tensor 是 (TotalPixels, NDim) 扁平化的
+    // Write to Global Memory
+    // Indices tensor is flattened as (TotalPixels, NDim)
     int64_t out_ptr = idx * NDim;
     for (int d = 0; d < NDim; ++d) {
         indices[out_ptr + d] = coords[d];
@@ -284,24 +286,23 @@ std::tuple<torch::Tensor, torch::Tensor> distance_transform_cuda(torch::Tensor i
     
     input = input.contiguous();
     
-    // 处理 Batch 维度：如果输入是 1D (L)，视为无 Batch，但在处理中统一加一个 Batch 维方便
-    // 标准约定：Input shape (Batch, D1, D2, ..., Dn)
-    // 算法对 Batch 维度和其他维度处理其实是一样的（视为无关维度）
-    // 但索引初始化需要知道哪些是 "Spatial Dimensions"。
-    // 这里假设：输入的所有维度除了 Batch (Dim 0) 外都是空间维度。
+    // Handle batch dimension: if input is 1D (L), treat as no batch but internally add a batch dimension.
+    // Convention: input shape is (Batch, D1, D2, ..., Dn)
+    // Algorithm treats batch and other dims identically (batch is just another leading dimension)
+    // But index initialization needs to know which are "spatial dimensions".
+    // Assumption: all dims except dim 0 (Batch) are spatial.
     
     const int ndim = input.dim(); 
-    // 如果 ndim=1, 假设是 (L)，sample_ndim=1
-    // 如果 ndim=4 (B, C, H, W)，sample_ndim=3 (C,H,W 都算空间? 通常 C 也是独立处理的)
-    // **修正**: 标准 EDT 通常是在 (H, W) 或 (D, H, W) 上进行的。
-    // 如果有 Channel，通常 Channel 也是独立的。
-    // 为了最通用，我们将 **除了第0维(Batch)** 以外的所有维度都视为空间维度进行索引记录。
-    // 如果用户输入没有 Batch 维，请在 Python 端 unsqueeze(0)。
+    // If ndim=1, assume (L) → sample_ndim=1
+    // If ndim=4 (B, C, H, W), sample_ndim=3 (C,H,W treated as spatial? Channels often processed independently)
+    // Correction: classical EDT usually runs on (H,W) or (D,H,W).
+    // If channels exist, typically each channel is processed independently.
+    // For maximum generality, we treat **all dims except dim 0** as spatial dims.
+    // If input has no batch dim, user should use unsqueeze(0) in Python.
     
-    // 假设输入已经是 (Batch, ...Spatial...)
     const int sample_ndim = ndim - 1; 
     TORCH_CHECK(sample_ndim > 0, "Input tensor must have at least 2 dimensions (Batch, ...)");
-
+    
     auto shape = input.sizes().vec();
     int64_t num_pixels = input.numel();
 
@@ -312,23 +313,23 @@ std::tuple<torch::Tensor, torch::Tensor> distance_transform_cuda(torch::Tensor i
                                torch::empty(index_shape, input.options().dtype(torch::kInt32)));
     }
 
-    // 1. 初始化 Distance Tensor
+    // 1. Initialize Distance Tensor
     // 0 -> 0, 1 -> INF
     auto current_dist = torch::where(input == 0, 
                                      torch::tensor(0.0f, input.options()), 
                                      torch::tensor(INF_VAL, input.options()));
     
-    // 2. 初始化 Index Tensor
+    // 2. Initialize Index Tensor
     // Shape: (Batch, D1, ..., Dn, sample_ndim)
     auto index_shape = shape;
     index_shape.push_back(sample_ndim);
     auto current_idx = torch::empty(index_shape, input.options().dtype(torch::kInt32));
     
-    // 2.1 准备 Shape 数据传给 Kernel
+    // 2.1 Prepare shape tensor for kernel
     std::vector<int64_t> spatial_shape(shape.begin() + 1, shape.end());
     auto shape_tensor = torch::tensor(spatial_shape, torch::kInt64).to(input.device());
 
-    // 2.2 运行初始化 Kernel
+    // 2.2 Launch initialization kernel
     {
         int threads = 256;
         int blocks = (num_pixels + threads - 1) / threads;
@@ -344,20 +345,20 @@ std::tuple<torch::Tensor, torch::Tensor> distance_transform_cuda(torch::Tensor i
         }
     }
 
-    // 预分配 Global Memory Buffer (懒加载)
+    // Pre-allocate Global Memory Buffers (lazy)
     torch::Tensor global_buf1, global_buf2;
 
-    // 3. 逐维处理 (Separable JFA)
-    // 遍历每一个空间维度 (从 1 到 ndim-1)
+    // 3. Process each spatial dimension (Separable JFA)
+    // Iterate through each spatial dimension (1 to ndim-1)
     for (int d = 1; d < ndim; ++d) {
         bool is_final_pass = (d == ndim - 1);
         
         // --- Step A: Transpose current dim to last ---
-        // 变换后 Shape: (..., L)
+        // Resulting shape: (..., L)
         auto dist_in = current_dist.transpose(d, ndim - 1).contiguous();
         auto idx_in  = current_idx.transpose(d, ndim - 1).contiguous(); 
         
-        int64_t L = dist_in.size(-1); // 当前维度的长度
+        int64_t L = dist_in.size(-1); 
         int64_t total_slices = dist_in.numel() / L; 
         
         auto dist_out = torch::empty_like(dist_in);
@@ -366,11 +367,11 @@ std::tuple<torch::Tensor, torch::Tensor> distance_transform_cuda(torch::Tensor i
         // --- Step B: Kernel Dispatch ---
         int threads = std::min((int64_t)MAX_THREADS, L);
         
-        // 检查是否可以使用 Shared Memory
+        // Check whether Shared Memory can be used
         if (L <= SMEM_LIMIT_ELEMENTS) {
             size_t smem_size = L * (sizeof(float) + 2 * sizeof(int));
             
-            // 使用 Switch 宏来处理常用的维度模板特化
+            // Switch macro to handle template dimension specialization
             #define DISPATCH_SHARED(IS_FINAL) \
                 switch(sample_ndim) { \
                     case 1: edt_kernel_shared<IS_FINAL, 1><<<total_slices, threads, smem_size>>>( \
@@ -408,7 +409,7 @@ std::tuple<torch::Tensor, torch::Tensor> distance_transform_cuda(torch::Tensor i
             else { DISPATCH_SHARED(false); }
 
         } else {
-            // Global Memory Fallback (L > 4096)
+            // Global Memory fallback (L > 4096)
             if (global_buf1.numel() < dist_in.numel()) {
                 global_buf1 = torch::empty({dist_in.numel()}, torch::TensorOptions().dtype(torch::kInt32).device(input.device()));
                 global_buf2 = torch::empty({dist_in.numel()}, torch::TensorOptions().dtype(torch::kInt32).device(input.device()));
@@ -465,3 +466,4 @@ std::tuple<torch::Tensor, torch::Tensor> distance_transform_cuda(torch::Tensor i
 
     return std::make_tuple(current_dist, current_idx);
 }
+
