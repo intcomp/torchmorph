@@ -27,7 +27,7 @@ for B in batches:
         # Inputs
         x = (torch.randn(B, 1, s, s, device=device) > 0).to(dtype)
         x_np_list = [x[i, 0].detach().cpu().numpy() for i in range(B)]
-        x_imgs = [x[i:i+1] for i in range(B)]
+        x_imgs = [x[i : i + 1] for i in range(B)]
 
         # SciPy (CPU, one-by-one)
         stmt_scipy = "out = [ndi.distance_transform_edt(arr) for arr in x_np_list]"
@@ -62,14 +62,16 @@ for xi in x_imgs:
         speed1 = scipy_per_img_ms / torch1_per_img_ms
         speedB = scipy_per_img_ms / torchB_per_img_ms
 
-        table.add_row([
-            s,
-            f"{scipy_per_img_ms:.3f}",
-            f"{torch1_per_img_ms:.3f}",
-            f"{torchB_per_img_ms:.3f}",
-            f"{speed1:.1f}×",
-            f"{speedB:.1f}×",
-        ])
+        table.add_row(
+            [
+                s,
+                f"{scipy_per_img_ms:.3f}",
+                f"{torch1_per_img_ms:.3f}",
+                f"{torchB_per_img_ms:.3f}",
+                f"{speed1:.1f}×",
+                f"{speedB:.1f}×",
+            ]
+        )
 
     print(f"\n=== Batch Size: {B} ===")
     print(table)

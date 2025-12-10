@@ -2,6 +2,7 @@ import numpy as np  # noqa: F401
 import pytest
 import torch
 from scipy.ndimage import distance_transform_edt as scipy_edt  # noqa: F401
+
 import torchmorph as tm  # noqa: F401
 
 
@@ -153,12 +154,11 @@ def test_distance_transform_and_indices(
 
     # 6. Validate distances
     print(
-        f"CUDA distance shape: {dist_cuda.shape}, "
-        f"reference shape: {dist_ref.shape}",
+        f"CUDA distance shape: {dist_cuda.shape}, " f"reference shape: {dist_ref.shape}",
     )
-    assert dist_cuda.shape == dist_ref.shape, (
-        f"Shape mismatch: {dist_cuda.shape} vs {dist_ref.shape}"
-    )
+    assert (
+        dist_cuda.shape == dist_ref.shape
+    ), f"Shape mismatch: {dist_cuda.shape} vs {dist_ref.shape}"
     torch.testing.assert_close(dist_cuda, dist_ref, atol=1e-3, rtol=1e-3)
     print(">> Distance validation passed.")
 

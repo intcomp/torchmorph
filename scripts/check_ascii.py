@@ -46,7 +46,7 @@ def is_forbidden_char(ch: str) -> bool:
     if cat.startswith("L"):  # Letter
         if in_ranges(ch, LATIN_RANGES):
             return False  # Latin letters allowed
-        return True       # Non-Latin letters forbidden
+        return True  # Non-Latin letters forbidden
 
     # All non-letter stuff (emoji, arrows, symbols, punctuation) is allowed.
     return False
