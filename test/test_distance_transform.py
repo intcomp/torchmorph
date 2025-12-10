@@ -1,9 +1,8 @@
-import numpy as np
+import numpy as np  # noqa: F401
 import pytest
 import torch
-from scipy.ndimage import distance_transform_edt as scipy_edt
-
-import torchmorph as tm
+from scipy.ndimage import distance_transform_edt as scipy_edt  # noqa: F401
+import torchmorph as tm  # noqa: F401
 
 
 # ======================================================================

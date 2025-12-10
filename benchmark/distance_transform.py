@@ -1,9 +1,6 @@
 import torch
 import torch.utils.benchmark as benchmark
-import scipy.ndimage as ndi
-import numpy as np
 from prettytable import PrettyTable
-import torchmorph as tm
 
 sizes = [64, 128, 256, 512, 1024]
 batches = [1, 4, 8, 16]
@@ -76,4 +73,3 @@ for xi in x_imgs:
 
     print(f"\n=== Batch Size: {B} ===")
     print(table)
-
