@@ -22,4 +22,4 @@ repos:
         entry: python3 scripts/check_ascii.py
         language: system
         types: [file]
-        files: '\.(c|cc|cpp|cxx|cu|cuh|h|hpp)$'
+        files: '\.(c|cc|cpp|cxx|cu|cuh|h|hpp|py)$'
