@@ -2,7 +2,7 @@
 import sys
 from pathlib import Path
 
-TARGET_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".cu", ".cuh", ".h", ".hpp"}
+TARGET_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".cu", ".cuh", ".h", ".hpp", ".py"}
 
 def find_non_ascii(line):
     """Return list of (index, char) for all non-ASCII chars in a line."""
