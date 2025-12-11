@@ -11,3 +11,15 @@ repos:
     rev: 6.1.0
     hooks:
       - id: flake8
+
+  # -------------------------
+  # ⭐ Local Hook: forbid non-ASCII in C/C++/CUDA
+  # -------------------------
+  - repo: local
+    hooks:
+      - id: forbid-non-ascii
+        name: "Forbid non-ASCII characters in C/C++/CUDA"
+        entry: python3 scripts/check_ascii.py
+        language: system
+        types: [file]
+        files: '\.(c|cc|cpp|cxx|cu|cuh|h|hpp|py)$'

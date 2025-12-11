@@ -12,4 +12,4 @@ flake8>=6.0
 setuptools>=65.0
 wheel>=0.40
 ninja>=1.11  # optional, speeds up torch extension builds
-
+prettytable>=3.16.0

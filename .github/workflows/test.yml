@@ -1,0 +1,27 @@
+name: test
+
+on:
+    pull_request:
+      branches: ["*"]
+    push:
+        branches: [main]
+
+jobs:
+
+  test:
+      runs-on: self-hosted
+      steps:
+          - uses: actions/checkout@v4
+          - run: |
+              # Make CUDA visible to this shell and all child processes
+              export CUDA_HOME=/usr/local/cuda
+              export PATH="$CUDA_HOME/bin:$PATH"
+              export LD_LIBRARY_PATH="$CUDA_HOME/lib64:${LD_LIBRARY_PATH:-}"
+              echo "CUDA_HOME=$CUDA_HOME"
+              pip install -r requirements-dev.txt --break-system-packages --user
+              pip uninstall torchmorph --yes --break-system-packages
+              python setup.py install --user
+          - run: |
+              ORIGINAL=$(pwd)
+              cd /tmp
+              pytest $ORIGINAL/test
