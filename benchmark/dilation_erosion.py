@@ -43,8 +43,7 @@ def bench_single_op(op_name):
             # Generate binary input
             x = (torch.randn(B, 1, s, s, device=device) > 0).to(dtype)
             x_np_list = [x[i, 0].detach().cpu().numpy() for i in range(B)]
-            x_imgs = [x[i:i+1] for i in range(B)]
-
+            x_imgs = [x[i:i+1] for i in range(B)] # (1, 1, H, W)
             # SciPy (CPU, one-by-one)
             stmt_scipy = "out = [scipy_op(arr) for arr in x_np_list]"
             t_scipy = benchmark.Timer(
@@ -54,10 +53,6 @@ def bench_single_op(op_name):
             scipy_ms = (t_scipy.median * 1e3) / B
 
             # Torch CUDA (one-by-one)
-            stmt_torch1 = """
-for xi in x_imgs:
-    torch_op(xi)
-"""
             t_torch1 = benchmark.Timer(
                 stmt=stmt_torch1,
                 globals={"x_imgs": x_imgs, "torch_op": torch_op},
