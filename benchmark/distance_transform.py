@@ -1,6 +1,9 @@
+import scipy.ndimage as ndi  # noqa: F401
 import torch
 import torch.utils.benchmark as benchmark
 from prettytable import PrettyTable
+
+import torchmorph as tm  # noqa: F401
 
 sizes = [64, 128, 256, 512, 1024]
 batches = [1, 4, 8, 16]
