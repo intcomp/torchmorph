@@ -1,7 +1,8 @@
+import scipy.ndimage as ndi
 import torch
 import torch.utils.benchmark as benchmark
-import scipy.ndimage as ndi
 from prettytable import PrettyTable
+
 import torchmorph as tm
 
 sizes = [64, 128, 256, 512]
@@ -42,7 +43,7 @@ def bench_single_op(op_name):
             # Generate binary input
             x = (torch.randn(B, 1, s, s, device=device) > 0).to(dtype)
             x_np_list = [x[i, 0].detach().cpu().numpy() for i in range(B)]
-            x_imgs = [x[i:i+1] for i in range(B)]  # (1, 1, H, W)
+            x_imgs = [x[i : i + 1] for i in range(B)]  # (1, 1, H, W)
             # SciPy (CPU, one-by-one)
             stmt_scipy = "out = [scipy_op(arr) for arr in x_np_list]"
             t_scipy = benchmark.Timer(
@@ -70,14 +71,16 @@ def bench_single_op(op_name):
             speed1 = scipy_ms / torch1_ms
             speedB = scipy_ms / torchB_ms
 
-            table.add_row([
-                s,
-                f"{scipy_ms:.3f}",
-                f"{torch1_ms:.3f}",
-                f"{torchB_ms:.3f}",
-                f"{speed1:.1f}×",
-                f"{speedB:.1f}×",
-            ])
+            table.add_row(
+                [
+                    s,
+                    f"{scipy_ms:.3f}",
+                    f"{torch1_ms:.3f}",
+                    f"{torchB_ms:.3f}",
+                    f"{speed1:.1f}×",
+                    f"{speedB:.1f}×",
+                ]
+            )
 
         print(f"\n=== Batch Size: {B} ===")
         print(table)

@@ -1,6 +1,7 @@
+from typing import Optional, Sequence, Tuple, Union
+
 import torch
 import torch.nn.functional as F
-from typing import Optional, Union, Sequence, Tuple
 
 
 def _to_bool_tensor(x: torch.Tensor) -> torch.Tensor:
@@ -37,7 +38,7 @@ def _to_bool_tensor(x: torch.Tensor) -> torch.Tensor:
 
     # Convert input tensor into boolean by checking non-zero status.
     # Non-zero -> True, zero -> False.
-    return (x != 0)
+    return x != 0
 
 
 def _normalize_structure(structure: Optional[torch.Tensor], ndim: int) -> torch.Tensor:
@@ -112,17 +113,14 @@ def _normalize_structure(structure: Optional[torch.Tensor], ndim: int) -> torch.
     # Validate dimensionality: the structuring element must have the same
     # number of dimensions as the spatial dimensions of the input tensor.
     if st.ndim != ndim:
-        raise ValueError(
-            f"structure must be {ndim}-D (got {st.ndim}-D)"
-        )
+        raise ValueError(f"structure must be {ndim}-D (got {st.ndim}-D)")
 
     # Return the normalized boolean structuring element.
     return st
 
 
 def _origin_to_tuple(
-    origin: Union[int, Sequence[int], Tuple[int, ...]],
-    ndim: int
+    origin: Union[int, Sequence[int], Tuple[int, ...]], ndim: int
 ) -> Tuple[int, ...]:
     """
     Normalize the `origin` argument into an ndim-length tuple.
@@ -154,8 +152,7 @@ def _origin_to_tuple(
 
 
 def _pad_for_kernel(
-    kernel_shape: Sequence[int],
-    origin: Sequence[int]
+    kernel_shape: Sequence[int], origin: Sequence[int]
 ) -> Tuple[Tuple[int, int], ...]:
     """
     Compute per-dimension padding sizes required to keep output shape
@@ -181,9 +178,7 @@ def _pad_for_kernel(
     return tuple(pads)
 
 
-def _make_padding_tuple_for_Fpad(
-    pads: Tuple[Tuple[int, int], ...]
-) -> Tuple[int, ...]:
+def _make_padding_tuple_for_Fpad(pads: Tuple[Tuple[int, int], ...]) -> Tuple[int, ...]:
     """
     Convert per-dimension padding into the flattened format required
     by torch.nn.functional.pad.
@@ -216,11 +211,7 @@ def _conv_nd(x: torch.Tensor, kernel: torch.Tensor, ndim: int) -> torch.Tensor:
     """
     # Convert kernel into convolution weight:
     # shape -> (out_channels=1, in_channels=1, *kernel_shape)
-    weight = (
-        kernel.to(dtype=x.dtype, device=x.device)
-        .unsqueeze(0)
-        .unsqueeze(0)
-    )
+    weight = kernel.to(dtype=x.dtype, device=x.device).unsqueeze(0).unsqueeze(0)
 
     if ndim == 1:
         return F.conv1d(x, weight)
@@ -238,7 +229,7 @@ def _morph_op(
     iterations: int,
     origin: Union[int, Sequence[int]],
     border_value: int,
-    mode: str
+    mode: str,
 ) -> torch.Tensor:
     """
     Core implementation of binary dilation and erosion using convolution.
@@ -273,7 +264,7 @@ def _morph_op(
         x = torch.tensor(x)
 
     # Convert input to boolean (binary morphology).
-    x_bool = (x != 0)
+    x_bool = x != 0
     # Supported input shapes:
     # (H,W), (C,H,W), (B,C,H,W), (B,C,D,H,W)
     full_ndim = x_bool.ndim
