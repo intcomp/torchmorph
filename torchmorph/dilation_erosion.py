@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 from typing import Optional, Union, Sequence, Tuple
 
+
 def _to_bool_tensor(x: torch.Tensor) -> torch.Tensor:
     """
     Convert an input value into a boolean PyTorch tensor.
@@ -170,11 +171,11 @@ def _pad_for_kernel(
         # Default symmetric padding would be k//2,
         # but origin shifts the effective center.
         pad_before = k // 2 - o
-        pad_after  = k - 1 - pad_before
+        pad_after = k - 1 - pad_before
 
         # Padding must be non-negative.
         pad_before = max(pad_before, 0)
-        pad_after  = max(pad_after, 0)
+        pad_after = max(pad_after, 0)
 
         pads.append((pad_before, pad_after))
     return tuple(pads)
@@ -323,6 +324,7 @@ def _morph_op(
 
 def binary_dilation(input_tensor, structure=None, iterations=1, origin=0, border_value=0):
     return _morph_op(input_tensor, structure, iterations, origin, border_value, mode="dilation")
+
 
 def binary_erosion(input_tensor, structure=None, iterations=1, origin=0, border_value=0):
     return _morph_op(input_tensor, structure, iterations, origin, border_value, mode="erosion")
