@@ -17,35 +17,41 @@
 #define MAX_THREADS 1024
 #define SMEM_LIMIT_ELEMENTS 4096 
 
-// Configuration for 2D Optimized Block-JFA
-#define JFA_BLOCK_DIM 32       //  Tile size: 32x32
-#define JFA_FUSED_STEPS 4      //  Fused steps: 1, 2, 4, 8
-#define JFA_MAX_OFFSET 8       //  Max offset processed in shared memory (Step 8)
-#define JFA_SMEM_DIM (JFA_BLOCK_DIM + 2 * JFA_MAX_OFFSET) // Shared mem size: 48x48 (includes halo)
+#define JFA_BLOCK_DIM 32       
+#define JFA_FUSED_STEPS 4      
+#define JFA_MAX_OFFSET 8       
+#define JFA_SMEM_DIM (JFA_BLOCK_DIM + 2 * JFA_MAX_OFFSET) 
+
+// 3D Config
+#define JFA_3D_BLOCK 8
+#define JFA_3D_HALO 1 
 
 // ------------------------------------------------------------------
 // Device Helpers
 // ------------------------------------------------------------------
 __device__ __forceinline__ float sqr(float x) { return x * x; }
 
-// Helper for JFA 2D calculation
+// Helper for JFA 2D/3D (Standard)
 __device__ __forceinline__ float dist_sq_2d(int y1, int x1, int y2, int x2) {
     return sqr((float)(y1 - y2)) + sqr((float)(x1 - x2));
 }
 
-// Helper for JFA 3D calculation
-__device__ __forceinline__ float dist_sq_3d(int z1, int y1, int x1, int z2, int y2, int x2) {
-    return sqr((float)(z1 - z2)) + sqr((float)(y1 - y2)) + sqr((float)(x1 - x2));
+// Helper for SoA 3D (Z, Y, X separate)
+__device__ __forceinline__ float dist_sq_3d_soa(int z1, int y1, int x1, int z2, int y2, int x2) {
+    if (z2 == -1) return INF_VAL;
+    float dz = (float)(z1 - z2);
+    float dy = (float)(y1 - y2);
+    float dx = (float)(x1 - x2);
+    return dz*dz + dy*dy + dx*dx;
 }
 
-// Helper for Separable 1D cost calculation
+// Helper for Separable 1D
 __device__ __forceinline__ float compute_cost(int q, int p, float val_p) {
     if (p < 0 || val_p >= INF_VAL) return INF_VAL; 
     return sqr((float)q - (float)p) + val_p;
 }
 
-// Device Helpers for int2 (Vectorized Coordinate)
-// seed.x represents Y, seed.y represents X
+// Device Helpers for int2 (2D Vectorized)
 __device__ __forceinline__ float dist_sq_int2(int y, int x, int2 seed) {
     if (seed.x == -1) return INF_VAL; 
     float dy = (float)(y - seed.x);
@@ -54,15 +60,13 @@ __device__ __forceinline__ float dist_sq_int2(int y, int x, int2 seed) {
 }
 
 // ==================================================================
-// PART 1: JFA KERNELS (Optimized for 2D with Block-Shared Memory)
+// PART 1: JFA KERNELS 2D (Vectorized int2 + Block Shared)
 // ==================================================================
 
-// --- 2D Initialization (Vectorized int2) ---
-// Initializes the coordinate map. Pixels with value 0 become seeds.
 __global__ void init_jfa_kernel_2d_opt(
     const float* __restrict__ input,
-    int2* __restrict__ output, // Output treats (y,x) pair as a single int2
-    int64_t total_elements,    // Total pixels (B*H*W)
+    int2* __restrict__ output, 
+    int64_t total_elements,    
     int H, int W
 ) {
     int64_t tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -73,57 +77,44 @@ __global__ void init_jfa_kernel_2d_opt(
         int64_t rem = tid % spatial_size;
         int w = (int)(rem % W);
         int h = (int)(rem / W);
-        // Store coordinates: .x=y (height), .y=x (width)
         output[tid] = make_int2(h, w); 
     } else {
         output[tid] = make_int2(-1, -1);
     }
 }
 
-// --- 2D Block-JFA Fused Step ---
-// Innovation: Performs Steps 1, 2, 4, and 8 entirely within Shared Memory.
-// Uses a "Halo" (Apron) region to avoid boundary checks during iteration.
 __global__ void jfa_block_fused_kernel_2d(
     const int2* __restrict__ in_idx,
     int2* __restrict__ out_idx,
     int H, int W,
-    int64_t num_images // Batch Size
+    int64_t num_images 
 ) {
-    // Shared Memory: 48x48 int2 array (~18KB)
-    // Covers the 32x32 block plus an 8-pixel halo on all sides.
     __shared__ int2 smem[JFA_SMEM_DIM][JFA_SMEM_DIM];
 
-    int tx = threadIdx.x; // 0..31
-    int ty = threadIdx.y; // 0..31
+    int tx = threadIdx.x; 
+    int ty = threadIdx.y; 
     
-    // Global Block Indices
     int bx = blockIdx.x * blockDim.x;
     int by = blockIdx.y * blockDim.y;
-
     int img_idx = blockIdx.z;
     int64_t batch_offset = (int64_t)img_idx * (H * W);
 
     int gx = bx + tx;
     int gy = by + ty;
 
-    // --- Phase 1: Cooperative Load to Shared Memory (Tile + Halo) ---
-    
+    // Phase 1: load data to Shared Memory
     int smem_linear_size = JFA_SMEM_DIM * JFA_SMEM_DIM;
     int total_threads = blockDim.x * blockDim.y;
     int thread_linear_idx = ty * blockDim.x + tx;
 
-    // Base coordinates for the top-left corner of the Halo region
     int base_x = bx - JFA_MAX_OFFSET;
     int base_y = by - JFA_MAX_OFFSET;
 
-    // Loop to fill the entire shared memory buffer (larger than block size)
     for (int i = thread_linear_idx; i < smem_linear_size; i += total_threads) {
         int s_y = i / JFA_SMEM_DIM;
         int s_x = i % JFA_SMEM_DIM;
-
         int global_y = base_y + s_y;
         int global_x = base_x + s_x;
-
         int2 val = make_int2(-1, -1);
         if (global_y >= 0 && global_y < H && global_x >= 0 && global_x < W) {
             val = in_idx[batch_offset + global_y * W + global_x];
@@ -132,10 +123,8 @@ __global__ void jfa_block_fused_kernel_2d(
     }
     __syncthreads();
 
-    // --- Phase 2: Iterative JFA in Shared Memory ---
-    // Only process valid pixels within the image bounds
+    // Phase 2: Iterate in Shared Memory
     if (gx < W && gy < H) {
-        // Map thread to the center region of Shared Memory
         int center_sy = ty + JFA_MAX_OFFSET;
         int center_sx = tx + JFA_MAX_OFFSET;
 
@@ -143,21 +132,14 @@ __global__ void jfa_block_fused_kernel_2d(
         float best_dist = dist_sq_int2(gy, gx, best_seed);
 
         int step = 1;
-        
-        // Unroll steps 1, 2, 4, 8
         #pragma unroll
         for (int k = 0; k < JFA_FUSED_STEPS; ++k) { 
-            
             #pragma unroll
             for (int dy = -1; dy <= 1; ++dy) {
                 #pragma unroll
                 for (int dx = -1; dx <= 1; ++dx) {
                     if (dy == 0 && dx == 0) continue;
-                    
-                    // Access neighbor in SMEM directly. 
-                    // No boundary check needed because the Halo covers the max offset (8).
                     int2 neighbor_seed = smem[center_sy + dy * step][center_sx + dx * step];
-                    
                     if (neighbor_seed.x != -1) {
                         float d = dist_sq_int2(gy, gx, neighbor_seed);
                         if (d < best_dist) {
@@ -172,14 +154,10 @@ __global__ void jfa_block_fused_kernel_2d(
             __syncthreads();
             step *= 2;
         }
-
-        // --- Phase 3: Write results back to Global Memory ---
         out_idx[batch_offset + gy * W + gx] = best_seed;
     }
 }
 
-// --- 2D Global Step (Vectorized int2) ---
-// Handles larger steps (16, 32, ...) that exceed Shared Memory capacity.
 __global__ void jfa_step_global_2d_opt(
     const int2* __restrict__ in_idx,
     int2* __restrict__ out_idx,
@@ -203,7 +181,7 @@ __global__ void jfa_step_global_2d_opt(
     for (int dy = -1; dy <= 1; ++dy) {
         #pragma unroll
         for (int dx = -1; dx <= 1; ++dx) {
-            if (dx == 0 && dy == 0) continue; 
+            if (dx == 0 && dy == 0) continue;
             
             int ny = h + dy * step;
             int nx = w + dx * step;
@@ -223,7 +201,6 @@ __global__ void jfa_step_global_2d_opt(
     out_idx[tid] = best_seed;
 }
 
-// --- 2D Final Distance Calculation ---
 __global__ void calc_dist_kernel_2d_opt(
     const int2* __restrict__ indices,
     float* __restrict__ dist_out,
@@ -245,12 +222,17 @@ __global__ void calc_dist_kernel_2d_opt(
     }
 }
 
-// --- 3D JFA Initialization ---
+// ==================================================================
+// PART 2: JFA KERNELS 3D (Optimized SoA Layout)
+// ==================================================================
+
 template <typename IndexType>
-__global__ void init_jfa_kernel_3d(
+__global__ void init_jfa_kernel_3d_soa(
     const float* __restrict__ input,
-    IndexType* __restrict__ indices, 
-    int64_t total_elements,
+    IndexType* __restrict__ indices_z,
+    IndexType* __restrict__ indices_y,
+    IndexType* __restrict__ indices_x,
+    int64_t total_elements, 
     int D, int H, int W
 ) {
     int64_t tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -262,23 +244,150 @@ __global__ void init_jfa_kernel_3d(
         int w = (int)(rem % W);
         int h = (int)((rem / W) % H);
         int d = (int)(rem / (W * H));
-        int64_t idx_ptr = tid * 3;
-        indices[idx_ptr + 0] = (IndexType)d;
-        indices[idx_ptr + 1] = (IndexType)h;
-        indices[idx_ptr + 2] = (IndexType)w;
+
+        indices_z[tid] = (IndexType)d;
+        indices_y[tid] = (IndexType)h;
+        indices_x[tid] = (IndexType)w;
     } else {
-        int64_t idx_ptr = tid * 3;
-        indices[idx_ptr + 0] = (IndexType)-1;
-        indices[idx_ptr + 1] = (IndexType)-1;
-        indices[idx_ptr + 2] = (IndexType)-1;
+        indices_z[tid] = (IndexType)-1;
+        indices_y[tid] = (IndexType)-1;
+        indices_x[tid] = (IndexType)-1;
     }
 }
 
-// --- 3D JFA Step ---
 template <typename IndexType>
-__global__ void jfa_step_3d(
-    const IndexType* __restrict__ in_idx,
-    IndexType* __restrict__ out_idx,
+__global__ void jfa_block_fused_kernel_3d_soa(
+    const IndexType* __restrict__ in_z,
+    const IndexType* __restrict__ in_y,
+    const IndexType* __restrict__ in_x,
+    IndexType* __restrict__ out_z,
+    IndexType* __restrict__ out_y,
+    IndexType* __restrict__ out_x,
+    int D, int H, int W,
+    int blocks_per_d
+) {
+    const int BLOCK_DIM = 8;
+    const int HALO = 3; 
+    const int SMEM_DIM = BLOCK_DIM + 2 * HALO; // 14
+    const int SMEM_SIZE = SMEM_DIM * SMEM_DIM * SMEM_DIM;
+
+    extern __shared__ char smem_raw[];
+    IndexType* smem_z = (IndexType*)smem_raw;
+    IndexType* smem_y = smem_z + SMEM_SIZE;
+    IndexType* smem_x = smem_y + SMEM_SIZE;
+
+    int tx = threadIdx.x; int ty = threadIdx.y; int tz = threadIdx.z;
+
+    int b_z_total = blockIdx.z;
+    int batch_id = b_z_total / blocks_per_d;
+    int b_z_local = b_z_total % blocks_per_d;
+    
+    int bx = blockIdx.x * BLOCK_DIM;
+    int by = blockIdx.y * BLOCK_DIM;
+    int bz = b_z_local * BLOCK_DIM;
+
+    int64_t spatial_offset = (int64_t)batch_id * (D * H * W);
+
+    // Phase 1: Load to SoA Shared Memory
+    int tid = tz * 64 + ty * 8 + tx; 
+    int base_x = bx - HALO;
+    int base_y = by - HALO;
+    int base_z = bz - HALO;
+
+    for (int i = tid; i < SMEM_SIZE; i += 512) {
+        int temp = i;
+        int sx = temp % SMEM_DIM; temp /= SMEM_DIM;
+        int sy = temp % SMEM_DIM;
+        int sz = temp / SMEM_DIM;
+
+        int gx = base_x + sx;
+        int gy = base_y + sy;
+        int gz = base_z + sz;
+
+        IndexType val_z = -1, val_y = -1, val_x = -1;
+        if (gz >= 0 && gz < D && gy >= 0 && gy < H && gx >= 0 && gx < W) {
+            int64_t idx = spatial_offset + (int64_t)gz * (H * W) + gy * W + gx;
+            val_z = in_z[idx];
+            val_y = in_y[idx];
+            val_x = in_x[idx];
+        }
+        smem_z[i] = val_z;
+        smem_y[i] = val_y;
+        smem_x[i] = val_x;
+    }
+    __syncthreads();
+
+    // Phase 2: Compute
+    int center_sz = tz + HALO;
+    int center_sy = ty + HALO;
+    int center_sx = tx + HALO;
+    int my_s_idx = (center_sz * SMEM_DIM + center_sy) * SMEM_DIM + center_sx;
+
+    int best_z = (int)smem_z[my_s_idx];
+    int best_y = (int)smem_y[my_s_idx];
+    int best_x = (int)smem_x[my_s_idx];
+
+    int g_cz = bz + tz;
+    int g_cy = by + ty;
+    int g_cx = bx + tx;
+
+    float best_dist = dist_sq_3d_soa(g_cz, g_cy, g_cx, best_z, best_y, best_x);
+
+    int step = 1;
+    #pragma unroll
+    for (int k = 0; k < 2; ++k) { 
+        #pragma unroll
+        for (int dz = -1; dz <= 1; ++dz) {
+            #pragma unroll
+            for (int dy = -1; dy <= 1; ++dy) {
+                #pragma unroll
+                for (int dx = -1; dx <= 1; ++dx) {
+                    if (dz == 0 && dy == 0 && dx == 0) continue;
+
+                    int nz = center_sz + dz * step;
+                    int ny = center_sy + dy * step;
+                    int nx = center_sx + dx * step;
+                    int n_idx = (nz * SMEM_DIM + ny) * SMEM_DIM + nx;
+
+                    int sz_in = (int)smem_z[n_idx]; 
+                    if (sz_in != -1) {
+                        int sy_in = (int)smem_y[n_idx];
+                        int sx_in = (int)smem_x[n_idx];
+                        float d = dist_sq_3d_soa(g_cz, g_cy, g_cx, sz_in, sy_in, sx_in);
+                        if (d < best_dist) {
+                            best_dist = d;
+                            best_z = sz_in;
+                            best_y = sy_in;
+                            best_x = sx_in;
+                        }
+                    }
+                }
+            }
+        }
+        __syncthreads();
+        smem_z[my_s_idx] = (IndexType)best_z;
+        smem_y[my_s_idx] = (IndexType)best_y;
+        smem_x[my_s_idx] = (IndexType)best_x;
+        __syncthreads();
+        step *= 2;
+    }
+
+    if (g_cz < D && g_cy < H && g_cx < W) {
+        int64_t out_idx_g = spatial_offset + (int64_t)g_cz * (H * W) + g_cy * W + g_cx;
+        out_z[out_idx_g] = (IndexType)best_z;
+        out_y[out_idx_g] = (IndexType)best_y;
+        out_x[out_idx_g] = (IndexType)best_x;
+    }
+}
+
+template <typename IndexType>
+__global__ void jfa_step_3d_soa(
+    const IndexType* __restrict__ in_z,
+    const IndexType* __restrict__ in_y,
+    const IndexType* __restrict__ in_x,
+    IndexType* __restrict__ out_z,
+    IndexType* __restrict__ out_y,
+    IndexType* __restrict__ out_x,
     int step,
     int D, int H, int W, 
     int64_t total_pixels
@@ -289,12 +398,15 @@ __global__ void jfa_step_3d(
     int64_t spatial_size = (int64_t)D * H * W;
     int64_t rem = tid % spatial_size;
     int64_t batch_offset = tid - rem; 
-    int w = (int)(rem % W);
-    int h = (int)((rem / W) % H);
-    int d = (int)(rem / (W * H));
+    int cur_w = (int)(rem % W);
+    int cur_h = (int)((rem / W) % H);
+    int cur_d = (int)(rem / (W * H));
 
-    int best_z = -1, best_y = -1, best_x = -1;
-    float best_dist = INF_VAL;
+    int best_z = (int)in_z[tid];
+    int best_y = (int)in_y[tid];
+    int best_x = (int)in_x[tid];
+    
+    float best_dist = dist_sq_3d_soa(cur_d, cur_h, cur_w, best_z, best_y, best_x);
 
     #pragma unroll
     for (int dz = -1; dz <= 1; ++dz) {
@@ -302,37 +414,47 @@ __global__ void jfa_step_3d(
         for (int dy = -1; dy <= 1; ++dy) {
             #pragma unroll
             for (int dx = -1; dx <= 1; ++dx) {
-                int nz = d + dz * step;
-                int ny = h + dy * step;
-                int nx = w + dx * step;
+                if (dz == 0 && dy == 0 && dx == 0) continue;
+
+                int nz = cur_d + dz * step;
+                int ny = cur_h + dy * step;
+                int nx = cur_w + dx * step;
+
                 if (nz >= 0 && nz < D && ny >= 0 && ny < H && nx >= 0 && nx < W) {
-                    int64_t n_ptr = (batch_offset + (int64_t)nz * (H * W) + ny * W + nx) * 3;
-                    int seed_z = (int)in_idx[n_ptr + 0];
+                    int64_t n_idx = batch_offset + (int64_t)nz * (H * W) + ny * W + nx;
+                    
+                    int seed_z = (int)in_z[n_idx];
                     if (seed_z != -1) {
-                        int seed_y = (int)in_idx[n_ptr + 1];
-                        int seed_x = (int)in_idx[n_ptr + 2];
-                        float dist = dist_sq_3d(d, h, w, seed_z, seed_y, seed_x);
-                        if (dist < best_dist) {
-                            best_dist = dist;
-                            best_z = seed_z;
-                            best_y = seed_y;
-                            best_x = seed_x;
+                        float dz_val = (float)(cur_d - seed_z);
+                        float dz_sq = dz_val * dz_val;
+                        
+                        if (dz_sq < best_dist) {
+                            int seed_y = (int)in_y[n_idx];
+                            int seed_x = (int)in_x[n_idx];
+                            float dist = dz_sq + sqr((float)(cur_h - seed_y)) + sqr((float)(cur_w - seed_x));
+                            
+                            if (dist < best_dist) {
+                                best_dist = dist;
+                                best_z = seed_z;
+                                best_y = seed_y;
+                                best_x = seed_x;
+                            }
                         }
                     }
                 }
             }
         }
     }
-    int64_t out_ptr = tid * 3;
-    out_idx[out_ptr + 0] = (IndexType)best_z;
-    out_idx[out_ptr + 1] = (IndexType)best_y;
-    out_idx[out_ptr + 2] = (IndexType)best_x;
+    out_z[tid] = (IndexType)best_z;
+    out_y[tid] = (IndexType)best_y;
+    out_x[tid] = (IndexType)best_x;
 }
 
-// --- 3D JFA Distance Calculation ---
 template <typename IndexType>
-__global__ void calc_dist_kernel_3d(
-    const IndexType* __restrict__ indices,
+__global__ void calc_dist_kernel_3d_soa(
+    const IndexType* __restrict__ in_z,
+    const IndexType* __restrict__ in_y,
+    const IndexType* __restrict__ in_x,
     float* __restrict__ dist_out,
     int64_t total_elements,
     int D, int H, int W
@@ -340,26 +462,27 @@ __global__ void calc_dist_kernel_3d(
     int64_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= total_elements) return;
 
-    int64_t idx_ptr = tid * 3;
-    int seed_d = (int)indices[idx_ptr + 0];
-    if (seed_d == -1) { dist_out[tid] = INF_VAL; return; }
-    int seed_h = (int)indices[idx_ptr + 1];
-    int seed_w = (int)indices[idx_ptr + 2];
+    int seed_d = (int)in_z[tid];
+    if (seed_d == -1) { 
+        dist_out[tid] = INF_VAL; 
+    } else {
+        int seed_h = (int)in_y[tid];
+        int seed_w = (int)in_x[tid];
 
-    int64_t spatial_size = (int64_t)D * H * W;
-    int64_t rem = tid % spatial_size;
-    int cur_w = (int)(rem % W);
-    int cur_h = (int)((rem / W) % H);
-    int cur_d = (int)(rem / (W * H));
-
-    dist_out[tid] = sqrtf(dist_sq_3d(cur_d, cur_h, cur_w, seed_d, seed_h, seed_w));
+        int64_t spatial_size = (int64_t)D * H * W;
+        int64_t rem = tid % spatial_size;
+        int cur_w = (int)(rem % W);
+        int cur_h = (int)((rem / W) % H);
+        int cur_d = (int)(rem / (W * H));
+        
+        dist_out[tid] = sqrtf(dist_sq_3d_soa(cur_d, cur_h, cur_w, seed_d, seed_h, seed_w));
+    }
 }
 
 // ==================================================================
-// PART 2: SEPARABLE N-DIM KERNELS (For 4D+ Spatial)
+// PART 3: SEPARABLE N-DIM KERNELS
 // ==================================================================
 
-// Core logic for 1D Voronoi scan
 __device__ void run_separable_scan_core(
     int N,
     int tid,
@@ -367,14 +490,12 @@ __device__ void run_separable_scan_core(
     int* __restrict__ idx_curr,      
     int* __restrict__ idx_next       
 ) {
-    // 1. Initialization
     for (int i = tid; i < N; i += blockDim.x) {
         if (vals[i] >= INF_VAL * 0.9f) idx_curr[i] = -1; 
         else idx_curr[i] = i;  
     }
     __syncthreads();
 
-    // 2. Iterative Propagation (Logarithmic steps)
     int* idx_in = idx_curr;
     int* idx_out = idx_next;
 
@@ -385,7 +506,6 @@ __device__ void run_separable_scan_core(
 
             if (my_best_p != -1) min_cost = compute_cost(i, my_best_p, vals[my_best_p]);
 
-            // Check Left Neighbor
             int left = i - step;
             if (left >= 0) {
                 int left_p = idx_in[left];
@@ -395,7 +515,6 @@ __device__ void run_separable_scan_core(
                 }
             }
 
-            // Check Right Neighbor
             int right = i + step;
             if (right < N) {
                 int right_p = idx_in[right];
@@ -406,19 +525,16 @@ __device__ void run_separable_scan_core(
             }
             idx_out[i] = my_best_p;
         }
-        // Swap buffers
         int* temp = idx_in; idx_in = idx_out; idx_out = temp;
         __syncthreads();
     }
 
-    // 3. Final Copy Back (ensure result is in idx_curr)
     if (idx_in != idx_curr) {
         for (int i = tid; i < N; i += blockDim.x) idx_curr[i] = idx_next[i];
         __syncthreads();
     }
 }
 
-// Separable Kernel: Optimized using Shared Memory
 template <bool IsFinal>
 __global__ void separable_kernel_shared(
     const float* __restrict__ in_data,
@@ -433,13 +549,11 @@ __global__ void separable_kernel_shared(
     int64_t offset = row_idx * L;
     if (offset >= total_elements) return;
 
-    // Dynamic Shared Memory allocation
     extern __shared__ char s_buffer[];
     float* s_vals = (float*)s_buffer;
     int*   s_idx1 = (int*)(s_vals + L);
     int*   s_idx2 = (int*)(s_idx1 + L);
 
-    // Load data
     for (int i = threadIdx.x; i < L; i += blockDim.x) {
         s_vals[i] = __ldg(&in_data[offset + i]);
     }
@@ -447,7 +561,6 @@ __global__ void separable_kernel_shared(
 
     run_separable_scan_core(L, threadIdx.x, s_vals, s_idx1, s_idx2);
 
-    // Write back
     for (int q = threadIdx.x; q < L; q += blockDim.x) {
         int p = s_idx1[q];
         float dist_val;
@@ -473,7 +586,6 @@ __global__ void separable_kernel_shared(
     }
 }
 
-// Separable Kernel: Global Memory Fallback (when dim size > Shared Mem)
 template <bool IsFinal>
 __global__ void separable_kernel_global(
     const float* __restrict__ in_data,
@@ -520,7 +632,6 @@ __global__ void separable_kernel_global(
     }
 }
 
-// Separable Initialization
 __global__ void init_indices_separable_kernel(
     int32_t* indices, 
     int64_t total_pixels, 
@@ -542,37 +653,25 @@ __global__ void init_indices_separable_kernel(
 }
 
 // ==================================================================
-// PART 3: DISPATCH HELPERS
+// PART 4: DISPATCH HELPERS
 // ==================================================================
 
-// --- JFA 2D Dispatch ---
 std::tuple<torch::Tensor, torch::Tensor> run_jfa_2d(
     torch::Tensor input, int64_t H, int64_t W, int grid, int block, int64_t numel
 ) {
-    // Force Int32 to enable int2 vectorized loads/stores
     auto index_opts = input.options().dtype(torch::kInt32);
-    
-    // Create Double Buffer indices: (Batch, H, W, 2)
     auto idx_shape = input.sizes().vec();
     idx_shape.push_back(2); 
     auto curr_idx = torch::empty(idx_shape, index_opts);
     auto next_idx = torch::empty(idx_shape, index_opts);
     
-    // Cast int32 pointer to int2 pointer.
-    // Memory layout matches: consecutive pairs of (y, x) form int2.
     int2* d_curr = (int2*)curr_idx.data_ptr<int32_t>();
     int2* d_next = (int2*)next_idx.data_ptr<int32_t>();
 
-    // 1. Initialization Kernel
-    // numel equals the number of int2 elements (pixels)
     init_jfa_kernel_2d_opt<<<grid, block>>>(
-        input.data_ptr<float>(), 
-        d_curr, 
-        numel, H, W
+        input.data_ptr<float>(), d_curr, numel, H, W
     );
 
-    // 2. Block-JFA Fused Kernel (Optimized)
-    // Runs Steps 1, 2, 4, 8 inside Shared Memory
     {
         dim3 dimBlock(JFA_BLOCK_DIM, JFA_BLOCK_DIM); 
         int64_t batch_size = numel / (H * W);
@@ -580,91 +679,149 @@ std::tuple<torch::Tensor, torch::Tensor> run_jfa_2d(
                      (H + JFA_BLOCK_DIM - 1) / JFA_BLOCK_DIM, 
                      batch_size);
         
-        jfa_block_fused_kernel_2d<<<dimGrid, dimBlock>>>(
-            d_curr, 
-            d_next, 
-            H, W, batch_size
-        );
-        std::swap(d_curr, d_next);     // d_curr now holds result of Step 8
-        std::swap(curr_idx, next_idx); // Keep Tensor pointers in sync
+        jfa_block_fused_kernel_2d<<<dimGrid, dimBlock>>>(d_curr, d_next, H, W, batch_size);
+        std::swap(d_curr, d_next); 
+        std::swap(curr_idx, next_idx); 
     }
 
-    // 3. Global Loop (Steps 16, 32...)
     int max_dim = std::max((int)H, (int)W);
     int step = 16; 
 
     while (step < max_dim) {
-        jfa_step_global_2d_opt<<<grid, block>>>(
-            d_curr, 
-            d_next, 
-            step, 
-            H, W, numel
-        );
+        jfa_step_global_2d_opt<<<grid, block>>>(d_curr, d_next, step, H, W, numel);
         std::swap(d_curr, d_next);
         std::swap(curr_idx, next_idx);
         step *= 2;
     }
     
-    // 4. Final Distance Calculation
     auto final_dist = torch::empty_like(input);
-    calc_dist_kernel_2d_opt<<<grid, block>>>(
-        d_curr, 
-        final_dist.data_ptr<float>(), 
-        numel, H, W
-    );
+    calc_dist_kernel_2d_opt<<<grid, block>>>(d_curr, final_dist.data_ptr<float>(), numel, H, W);
 
     return std::make_tuple(final_dist, curr_idx);
 }
+
 
 std::tuple<torch::Tensor, torch::Tensor> run_jfa_3d(
     torch::Tensor input, int64_t D, int64_t H, int64_t W, int grid, int block, int64_t numel
 ) {
     bool use_int16 = (D < 32767 && H < 32767 && W < 32767);
     auto index_opts = input.options().dtype(use_int16 ? torch::kInt16 : torch::kInt32);
-    auto idx_shape = input.sizes().vec();
-    idx_shape.push_back(3);
-    auto curr_idx = torch::empty(idx_shape, index_opts);
-    auto next_idx = torch::empty(idx_shape, index_opts);
+    
+    int64_t batch = numel / (D * H * W);
+    
+    // (3, Batch, D, H, W)
+    auto curr_idx_soa = torch::empty({3, batch, D, H, W}, index_opts);
+    auto next_idx_soa = torch::empty({3, batch, D, H, W}, index_opts);
+    
+    void* d_curr = curr_idx_soa.data_ptr();
+    void* d_next = next_idx_soa.data_ptr();
+    int64_t plane_stride = numel; // B*D*H*W
 
-    if (use_int16) init_jfa_kernel_3d<int16_t><<<grid, block>>>(input.data_ptr<float>(), (int16_t*)curr_idx.data_ptr(), numel, D, H, W);
-    else init_jfa_kernel_3d<int32_t><<<grid, block>>>(input.data_ptr<float>(), (int32_t*)curr_idx.data_ptr(), numel, D, H, W);
-
-    int max_dim = std::max({(int)D, (int)H, (int)W});
-    int step = 1;
-    while (step < max_dim) step *= 2;
-    step /= 2;
-
-    while (step >= 1) {
-        if (use_int16) jfa_step_3d<int16_t><<<grid, block>>>((int16_t*)curr_idx.data_ptr(), (int16_t*)next_idx.data_ptr(), step, D, H, W, numel);
-        else jfa_step_3d<int32_t><<<grid, block>>>((int32_t*)curr_idx.data_ptr(), (int32_t*)next_idx.data_ptr(), step, D, H, W, numel);
-        std::swap(curr_idx, next_idx);
-        step /= 2;
+    // 1. Init
+    if (use_int16) {
+        int16_t* ptr = (int16_t*)d_curr;
+        init_jfa_kernel_3d_soa<int16_t><<<grid, block>>>(
+            input.data_ptr<float>(), ptr, ptr + plane_stride, ptr + 2 * plane_stride, numel, D, H, W
+        );
+    } else {
+        int32_t* ptr = (int32_t*)d_curr;
+        init_jfa_kernel_3d_soa<int32_t><<<grid, block>>>(
+            input.data_ptr<float>(), ptr, ptr + plane_stride, ptr + 2 * plane_stride, numel, D, H, W
+        );
     }
-    auto final_dist = torch::empty_like(input);
-    if (use_int16) calc_dist_kernel_3d<int16_t><<<grid, block>>>((int16_t*)curr_idx.data_ptr(), final_dist.data_ptr<float>(), numel, D, H, W);
-    else calc_dist_kernel_3d<int32_t><<<grid, block>>>((int32_t*)curr_idx.data_ptr(), final_dist.data_ptr<float>(), numel, D, H, W);
 
-    return std::make_tuple(final_dist, curr_idx);
+    // 2. Fused Steps
+    int block_dim = 8;
+    int blocks_per_d = (D + block_dim - 1) / block_dim;
+    dim3 fused_block(block_dim, block_dim, block_dim);
+    dim3 fused_grid((W + block_dim - 1) / block_dim, (H + block_dim - 1) / block_dim, blocks_per_d * batch);
+    size_t smem_bytes = (14*14*14) * 3 * (use_int16 ? 2 : 4);
+
+    if (use_int16) {
+        int16_t* c = (int16_t*)d_curr;
+        int16_t* n = (int16_t*)d_next;
+        jfa_block_fused_kernel_3d_soa<int16_t><<<fused_grid, fused_block, smem_bytes>>>(
+            c, c + plane_stride, c + 2 * plane_stride, 
+            n, n + plane_stride, n + 2 * plane_stride, 
+            D, H, W, blocks_per_d
+        );
+    } else {
+        int32_t* c = (int32_t*)d_curr;
+        int32_t* n = (int32_t*)d_next;
+        jfa_block_fused_kernel_3d_soa<int32_t><<<fused_grid, fused_block, smem_bytes>>>(
+            c, c + plane_stride, c + 2 * plane_stride, 
+            n, n + plane_stride, n + 2 * plane_stride, 
+            D, H, W, blocks_per_d
+        );
+    }
+    std::swap(d_curr, d_next); 
+
+    // 3. Global Steps
+    int max_dim = std::max({(int)D, (int)H, (int)W});
+    int step = 4;
+    while (step < max_dim) {
+        if (use_int16) {
+            int16_t* c = (int16_t*)d_curr;
+            int16_t* n = (int16_t*)d_next;
+            jfa_step_3d_soa<int16_t><<<grid, block>>>(
+                c, c + plane_stride, c + 2 * plane_stride, 
+                n, n + plane_stride, n + 2 * plane_stride, 
+                step, D, H, W, numel
+            );
+        } else {
+            int32_t* c = (int32_t*)d_curr;
+            int32_t* n = (int32_t*)d_next;
+            jfa_step_3d_soa<int32_t><<<grid, block>>>(
+                c, c + plane_stride, c + 2 * plane_stride, 
+                n, n + plane_stride, n + 2 * plane_stride, 
+                step, D, H, W, numel
+            );
+        }
+        std::swap(d_curr, d_next);
+        step *= 2;
+    }
+
+    // 4. Final Dist
+    auto final_dist = torch::empty_like(input);
+    if (use_int16) {
+        int16_t* c = (int16_t*)d_curr;
+        calc_dist_kernel_3d_soa<int16_t><<<grid, block>>>(
+            c, c + plane_stride, c + 2 * plane_stride, 
+            final_dist.data_ptr<float>(), numel, D, H, W
+        );
+    } else {
+        int32_t* c = (int32_t*)d_curr;
+        calc_dist_kernel_3d_soa<int32_t><<<grid, block>>>(
+            c, c + plane_stride, c + 2 * plane_stride, 
+            final_dist.data_ptr<float>(), numel, D, H, W
+        );
+    }
+
+    // Permute result indices back to (Batch, D, H, W, 3)
+    torch::Tensor result_indices;
+    if (d_curr == curr_idx_soa.data_ptr()) result_indices = curr_idx_soa;
+    else result_indices = next_idx_soa;
+    
+    result_indices = result_indices.permute({1, 2, 3, 4, 0}).contiguous();
+
+    return std::make_tuple(final_dist, result_indices);
 }
 
-// --- Separable N-Dim Dispatch ---
 std::tuple<torch::Tensor, torch::Tensor> run_separable_ndim(torch::Tensor input) {
     TORCH_CHECK(input.scalar_type() == torch::kFloat32, "Separable N-Dim input must be float32.");
     input = input.contiguous();
     
     const int ndim = input.dim(); 
-    const int sample_ndim = ndim - 1; // Assuming Dim 0 is Batch
+    const int sample_ndim = ndim - 1; 
     TORCH_CHECK(sample_ndim > 0 && sample_ndim <= 8, "Unsupported dims for Separable EDT");
     
     auto shape = input.sizes().vec();
     int64_t num_pixels = input.numel();
 
-    // 1. Init Distances
     auto current_dist = torch::where(input == 0, 
                                     torch::tensor(0.0f, input.options()), 
                                     torch::tensor(INF_VAL, input.options()));
     
-    // 2. Init Indices
     auto index_shape = shape;
     index_shape.push_back(sample_ndim);
     auto current_idx = torch::empty(index_shape, input.options().dtype(torch::kInt32));
@@ -681,7 +838,6 @@ std::tuple<torch::Tensor, torch::Tensor> run_separable_ndim(torch::Tensor input)
 
     torch::Tensor global_buf1, global_buf2;
 
-    // 3. Dimensional Iteration (Apply 1D transform along each spatial axis)
     for (int d = 1; d < ndim; ++d) {
         bool is_final_pass = (d == ndim - 1);
         
@@ -695,7 +851,6 @@ std::tuple<torch::Tensor, torch::Tensor> run_separable_ndim(torch::Tensor input)
         int64_t total_slices = dist_in.numel() / L; 
         int threads = std::min((int64_t)MAX_THREADS, L);
         
-        // Choose between Shared Memory or Global Memory kernel based on dimension size
         if (L <= SMEM_LIMIT_ELEMENTS) {
             size_t smem_size = L * (sizeof(float) + 2 * sizeof(int));
             if (is_final_pass) {
@@ -740,7 +895,7 @@ std::tuple<torch::Tensor, torch::Tensor> run_separable_ndim(torch::Tensor input)
 }
 
 // ==================================================================
-// PART 4: MAIN ENTRY POINT (INTEGRATED)
+// PART 5: MAIN ENTRY POINT
 // ==================================================================
 
 std::tuple<torch::Tensor, torch::Tensor> distance_transform_cuda(torch::Tensor input) {
@@ -752,27 +907,16 @@ std::tuple<torch::Tensor, torch::Tensor> distance_transform_cuda(torch::Tensor i
     int block = BLOCK_SIZE;
     int grid = (numel + block - 1) / block;
 
-    // ------------------------------------------------------------------
-    // CASE 1: High-Dimension (5D+) -> Use Separable N-Dim Algorithm
-    // Input: (Batch, D1, D2, D3...) -> Treated as N-Dim spatial
-    // ------------------------------------------------------------------
     if (dims >= 5) {
         return run_separable_ndim(input);
     }
-    
-    // ------------------------------------------------------------------
-    // CASE 2: 4D Tensor -> (Batch, Dim1, H, W)
-    // ------------------------------------------------------------------
     else if (dims == 4) {
         int64_t dim1 = input.size(1); 
-        
-        // [Fast Path]: (Batch, 1, H, W) -> Treat as 2D JFA
         if (dim1 == 1) {
             int64_t H = input.size(-2);
             int64_t W = input.size(-1);
             return run_jfa_2d(input, H, W, grid, block, numel);
         } 
-        // [Standard Path]: (Batch, Depth, H, W) -> Use 3D JFA
         else {
             int64_t D = dim1;
             int64_t H = input.size(-2);
@@ -780,31 +924,20 @@ std::tuple<torch::Tensor, torch::Tensor> distance_transform_cuda(torch::Tensor i
             return run_jfa_3d(input, D, H, W, grid, block, numel);
         }
     }
-
-    // ------------------------------------------------------------------
-    // CASE 3: 3D Tensor -> (Batch, H, W) -> Use 2D JFA
-    // ------------------------------------------------------------------
     else if (dims == 3) {
         int64_t H = input.size(-2);
         int64_t W = input.size(-1);
         return run_jfa_2d(input, H, W, grid, block, numel);
     }
-
-    // ------------------------------------------------------------------
-    // CASE 4: 2D Tensor -> (Batch, Length) -> 1D JFA (via 2D wrapper)
-    // ------------------------------------------------------------------
     else if (dims == 2) {
         int64_t H = 1;
         int64_t W = input.size(-1);
         auto result = run_jfa_2d(input, H, W, grid, block, numel);
-        
-        // Post-process for 1D: slice out the dummy Y coordinate
         torch::Tensor dist = std::get<0>(result);
         torch::Tensor idx_2d = std::get<1>(result); 
         auto idx_1d = idx_2d.slice(/*dim=*/-1, /*start=*/1, /*end=*/2).contiguous();
         return std::make_tuple(dist, idx_1d);
     }
-
     else {
         TORCH_CHECK(false, "Unsupported dimensions.");
         return std::make_tuple(torch::Tensor(), torch::Tensor());
