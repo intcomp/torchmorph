@@ -7,7 +7,7 @@ def distance_transform(input: torch.Tensor) -> torch.Tensor:
     """Distance Transform in CUDA."""
     if not input.is_cuda:
         raise ValueError("Input tensor must be on CUDA device.")
-    if input.ndim < 1 or input.numel() == 0:
+    if input.ndim < 2 or input.numel() == 0:
         raise ValueError(f"Invalid input dimension: {input.shape}.")
 
     # binarize input
