@@ -10,7 +10,7 @@
 #include <tuple>
 
 // ------------------------------------------------------------------
-// Global Configuration
+// Global Configuration(test)
 // ------------------------------------------------------------------
 #define BLOCK_SIZE 256
 #define INF_VAL 1e20f
