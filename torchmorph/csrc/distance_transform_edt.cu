@@ -11,6 +11,393 @@
 #define INF_VAL 1e20f
 #define MAX_THREADS 256
 #define SHARED_MEM_LIMIT 2048  // Max dimension size for shared memory path (48KB limit)
+#define EDT_2D_MAX_DIM 4096    // Max dimension size for 2D optimized kernels
+
+// ==============================================================================
+// 2D Optimized: Initialization kernel
+// ==============================================================================
+__global__ void init_distance_2d_kernel(
+    const float* __restrict__ input,
+    float* __restrict__ distance,
+    int* __restrict__ indices_y,
+    int* __restrict__ indices_x,
+    int height,
+    int width,
+    int64_t batch_stride,
+    bool compute_indices
+) {
+    int64_t batch_idx = blockIdx.z;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (y >= height || x >= width) return;
+
+    int64_t idx = batch_idx * batch_stride + y * width + x;
+
+    float val = input[idx];
+    distance[idx] = (val != 0.0f) ? INF_VAL : 0.0f;
+
+    if (compute_indices) {
+        indices_y[idx] = y;
+        indices_x[idx] = x;
+    }
+}
+
+// ==============================================================================
+// 2D Optimized: Row-wise EDT (X direction) - contiguous access
+// Each block processes one row
+// ==============================================================================
+__global__ void edt_2d_rows_kernel(
+    const float* __restrict__ input,
+    float* __restrict__ output,
+    const int* __restrict__ input_idx_y,
+    const int* __restrict__ input_idx_x,
+    int* __restrict__ output_idx_y,
+    int* __restrict__ output_idx_x,
+    int height,
+    int width,
+    int64_t batch_stride,
+    float spacing,
+    bool compute_indices
+) {
+    // blockIdx.x = batch_idx * height + row_idx
+    int64_t linear_idx = blockIdx.x;
+    int row_idx = linear_idx % height;
+    int64_t batch_idx = linear_idx / height;
+
+    int64_t row_base = batch_idx * batch_stride + row_idx * width;
+
+    extern __shared__ char shared_mem[];
+    float* v_val = (float*)shared_mem;
+    int* v_idx = (int*)(v_val + width);
+    float* z = (float*)(v_idx + width);
+
+    int tid = threadIdx.x;
+    int num_threads = blockDim.x;
+
+    // Load row into shared memory (contiguous access - optimal)
+    for (int i = tid; i < width; i += num_threads) {
+        v_val[i] = input[row_base + i];
+    }
+    __syncthreads();
+
+    // Build lower envelope (thread 0 only)
+    __shared__ int k_shared;
+
+    if (tid == 0) {
+        int k = -1;
+
+        for (int q = 0; q < width; q++) {
+            float fq = v_val[q];
+            if (fq >= INF_VAL * 0.5f) continue;
+
+            float q_pos = (float)q * spacing;
+            float q_pos_sq = q_pos * q_pos;
+
+            while (k >= 0) {
+                int vk = v_idx[k];
+                float vk_pos = (float)vk * spacing;
+                float fvk = v_val[vk];
+                float s = ((fq + q_pos_sq) - (fvk + vk_pos * vk_pos)) / (2.0f * (q_pos - vk_pos));
+
+                if (s > z[k]) break;
+                k--;
+            }
+
+            k++;
+            v_idx[k] = q;
+
+            if (k == 0) {
+                z[0] = -INF_VAL;
+            } else {
+                int vk_prev = v_idx[k - 1];
+                float vk_prev_pos = (float)vk_prev * spacing;
+                float fvk_prev = v_val[vk_prev];
+                z[k] = ((fq + q_pos_sq) - (fvk_prev + vk_prev_pos * vk_prev_pos)) /
+                       (2.0f * (q_pos - vk_prev_pos));
+            }
+            z[k + 1] = INF_VAL;
+        }
+        k_shared = k;
+    }
+    __syncthreads();
+
+    int k = k_shared;
+
+    // Parallel fill with binary search
+    for (int q = tid; q < width; q += num_threads) {
+        int64_t out_idx = row_base + q;
+
+        if (k < 0) {
+            output[out_idx] = INF_VAL;
+            if (compute_indices) {
+                output_idx_y[out_idx] = row_idx;
+                output_idx_x[out_idx] = 0;
+            }
+        } else {
+            float q_pos = (float)q * spacing;
+
+            // Binary search
+            int lo = 0, hi = k;
+            while (lo < hi) {
+                int mid = (lo + hi + 1) / 2;
+                if (z[mid] <= q_pos) lo = mid;
+                else hi = mid - 1;
+            }
+
+            int nearest = v_idx[lo];
+            float nearest_pos = (float)nearest * spacing;
+            float diff = q_pos - nearest_pos;
+            float dist_sq = diff * diff + v_val[nearest];
+
+            output[out_idx] = dist_sq;  // Keep squared for next pass
+
+            if (compute_indices) {
+                output_idx_y[out_idx] = row_idx;  // Y unchanged in X pass
+                output_idx_x[out_idx] = nearest;
+            }
+        }
+    }
+}
+
+// ==============================================================================
+// 2D Optimized: Column-wise EDT (Y direction) - strided access with shared memory
+// Each block processes one column
+// ==============================================================================
+__global__ void edt_2d_cols_kernel(
+    const float* __restrict__ input,
+    float* __restrict__ output,
+    const int* __restrict__ input_idx_y,
+    const int* __restrict__ input_idx_x,
+    int* __restrict__ output_idx_y,
+    int* __restrict__ output_idx_x,
+    int height,
+    int width,
+    int64_t batch_stride,
+    float spacing,
+    bool is_final,
+    bool compute_indices
+) {
+    // blockIdx.x = batch_idx * width + col_idx
+    int64_t linear_idx = blockIdx.x;
+    int col_idx = linear_idx % width;
+    int64_t batch_idx = linear_idx / width;
+
+    int64_t col_base = batch_idx * batch_stride + col_idx;
+    int stride = width;  // Stride to next row
+
+    extern __shared__ char shared_mem[];
+    float* v_val = (float*)shared_mem;
+    int* v_idx = (int*)(v_val + height);
+    float* z = (float*)(v_idx + height);
+    int* src_x = (int*)(z + height + 1);  // Store source X indices for index propagation
+
+    int tid = threadIdx.x;
+    int num_threads = blockDim.x;
+
+    // Load column into shared memory (strided access - but only once)
+    for (int i = tid; i < height; i += num_threads) {
+        v_val[i] = input[col_base + i * stride];
+        if (compute_indices) {
+            src_x[i] = input_idx_x[col_base + i * stride];
+        }
+    }
+    __syncthreads();
+
+    // Build lower envelope (thread 0 only)
+    __shared__ int k_shared;
+
+    if (tid == 0) {
+        int k = -1;
+
+        for (int q = 0; q < height; q++) {
+            float fq = v_val[q];
+            if (fq >= INF_VAL * 0.5f) continue;
+
+            float q_pos = (float)q * spacing;
+            float q_pos_sq = q_pos * q_pos;
+
+            while (k >= 0) {
+                int vk = v_idx[k];
+                float vk_pos = (float)vk * spacing;
+                float fvk = v_val[vk];
+                float s = ((fq + q_pos_sq) - (fvk + vk_pos * vk_pos)) / (2.0f * (q_pos - vk_pos));
+
+                if (s > z[k]) break;
+                k--;
+            }
+
+            k++;
+            v_idx[k] = q;
+
+            if (k == 0) {
+                z[0] = -INF_VAL;
+            } else {
+                int vk_prev = v_idx[k - 1];
+                float vk_prev_pos = (float)vk_prev * spacing;
+                float fvk_prev = v_val[vk_prev];
+                z[k] = ((fq + q_pos_sq) - (fvk_prev + vk_prev_pos * vk_prev_pos)) /
+                       (2.0f * (q_pos - vk_prev_pos));
+            }
+            z[k + 1] = INF_VAL;
+        }
+        k_shared = k;
+    }
+    __syncthreads();
+
+    int k = k_shared;
+
+    // Parallel fill with binary search
+    for (int q = tid; q < height; q += num_threads) {
+        int64_t out_idx = col_base + q * stride;
+
+        if (k < 0) {
+            output[out_idx] = INF_VAL;
+            if (compute_indices) {
+                output_idx_y[out_idx] = 0;
+                output_idx_x[out_idx] = col_idx;
+            }
+        } else {
+            float q_pos = (float)q * spacing;
+
+            // Binary search
+            int lo = 0, hi = k;
+            while (lo < hi) {
+                int mid = (lo + hi + 1) / 2;
+                if (z[mid] <= q_pos) lo = mid;
+                else hi = mid - 1;
+            }
+
+            int nearest = v_idx[lo];
+            float nearest_pos = (float)nearest * spacing;
+            float diff = q_pos - nearest_pos;
+            float dist_sq = diff * diff + v_val[nearest];
+
+            output[out_idx] = is_final ? sqrtf(dist_sq) : dist_sq;
+
+            if (compute_indices) {
+                output_idx_y[out_idx] = nearest;
+                output_idx_x[out_idx] = src_x[nearest];  // Propagate X from source
+            }
+        }
+    }
+}
+
+// ==============================================================================
+// 2D Optimized: Host function
+// ==============================================================================
+std::tuple<torch::Tensor, torch::Tensor> run_edt_2d_optimized(
+    torch::Tensor input,
+    float spacing_y,
+    float spacing_x,
+    bool return_indices
+) {
+    TORCH_CHECK(input.is_cuda(), "Input must be a CUDA tensor");
+    TORCH_CHECK(input.scalar_type() == torch::kFloat32, "Input must be float32");
+
+    input = input.contiguous();
+
+    int total_ndim = input.dim();
+    TORCH_CHECK(total_ndim >= 2, "Input must have at least 2 dimensions");
+
+    auto shape = input.sizes().vec();
+    int height = shape[total_ndim - 2];
+    int width = shape[total_ndim - 1];
+    int64_t batch_stride = (int64_t)height * width;
+    int64_t batch_size = input.numel() / batch_stride;
+    int64_t total_pixels = input.numel();
+
+    // Check dimension limits for 2D optimized path
+    TORCH_CHECK(height <= EDT_2D_MAX_DIM && width <= EDT_2D_MAX_DIM,
+                "Dimensions too large for 2D optimized path");
+
+    // Create output tensors
+    auto distance = torch::empty_like(input);
+    auto temp = torch::empty_like(input);
+
+    torch::Tensor indices_y, indices_x, temp_idx_y, temp_idx_x;
+    if (return_indices) {
+        indices_y = torch::empty_like(input, input.options().dtype(torch::kInt32));
+        indices_x = torch::empty_like(input, input.options().dtype(torch::kInt32));
+        temp_idx_y = torch::empty_like(indices_y);
+        temp_idx_x = torch::empty_like(indices_x);
+    }
+
+    // Step 1: Initialize
+    {
+        dim3 block(16, 16);
+        dim3 grid((width + 15) / 16, (height + 15) / 16, batch_size);
+
+        init_distance_2d_kernel<<<grid, block>>>(
+            input.data_ptr<float>(),
+            distance.data_ptr<float>(),
+            return_indices ? indices_y.data_ptr<int>() : nullptr,
+            return_indices ? indices_x.data_ptr<int>() : nullptr,
+            height, width, batch_stride,
+            return_indices
+        );
+    }
+
+    // Step 2: Row-wise EDT (X direction)
+    {
+        int64_t num_rows = batch_size * height;
+        int threads = min(width, MAX_THREADS);
+        size_t shared_mem_size = width * sizeof(float) +      // v_val
+                                  width * sizeof(int) +        // v_idx
+                                  (width + 1) * sizeof(float); // z
+
+        edt_2d_rows_kernel<<<num_rows, threads, shared_mem_size>>>(
+            distance.data_ptr<float>(),
+            temp.data_ptr<float>(),
+            return_indices ? indices_y.data_ptr<int>() : nullptr,
+            return_indices ? indices_x.data_ptr<int>() : nullptr,
+            return_indices ? temp_idx_y.data_ptr<int>() : nullptr,
+            return_indices ? temp_idx_x.data_ptr<int>() : nullptr,
+            height, width, batch_stride,
+            spacing_x,
+            return_indices
+        );
+    }
+
+    // Step 3: Column-wise EDT (Y direction)
+    {
+        int64_t num_cols = batch_size * width;
+        int threads = min(height, MAX_THREADS);
+        size_t shared_mem_size = height * sizeof(float) +       // v_val
+                                  height * sizeof(int) +         // v_idx
+                                  (height + 1) * sizeof(float);  // z
+        if (return_indices) {
+            shared_mem_size += height * sizeof(int);  // src_x
+        }
+
+        edt_2d_cols_kernel<<<num_cols, threads, shared_mem_size>>>(
+            temp.data_ptr<float>(),
+            distance.data_ptr<float>(),
+            return_indices ? temp_idx_y.data_ptr<int>() : nullptr,
+            return_indices ? temp_idx_x.data_ptr<int>() : nullptr,
+            return_indices ? indices_y.data_ptr<int>() : nullptr,
+            return_indices ? indices_x.data_ptr<int>() : nullptr,
+            height, width, batch_stride,
+            spacing_y,
+            true,  // is_final
+            return_indices
+        );
+    }
+
+    // Combine indices into single tensor with shape [2, ...]
+    torch::Tensor indices;
+    if (return_indices) {
+        std::vector<int64_t> idx_shape = {2};
+        for (auto s : shape) idx_shape.push_back(s);
+        indices = torch::empty(idx_shape, input.options().dtype(torch::kInt32));
+
+        // Copy Y and X indices
+        indices.select(0, 0).copy_(indices_y);
+        indices.select(0, 1).copy_(indices_x);
+    }
+
+    return std::make_tuple(distance, indices);
+}
 
 // ==============================================================================
 // 1D EDT kernel using GLOBAL memory (for large dimensions)
@@ -460,6 +847,32 @@ std::tuple<torch::Tensor, torch::Tensor> distance_transform_edt_cuda(
         sampling.resize(spatial_ndim, 1.0f);
     }
 
+    int spatial_ndim = sampling.size();
+
+    // Use 2D optimized path when applicable
+    if (spatial_ndim == 2) {
+        auto shape = input.sizes().vec();
+        int height = shape[total_ndim - 2];
+        int width = shape[total_ndim - 1];
+
+        // Check if dimensions are within limits for 2D optimized path
+        if (height <= EDT_2D_MAX_DIM && width <= EDT_2D_MAX_DIM) {
+            float spacing_y = sampling[0];
+            float spacing_x = sampling[1];
+
+            auto [distances, indices_result] = run_edt_2d_optimized(
+                input, spacing_y, spacing_x, return_indices
+            );
+
+            if (!return_indices) {
+                indices_result = torch::Tensor();
+            }
+
+            return std::make_tuple(distances, indices_result);
+        }
+    }
+
+    // Fall back to general N-D implementation
     auto [distances, indices_result] = run_edt_separable(input, sampling, return_indices);
 
     if (!return_indices) {
