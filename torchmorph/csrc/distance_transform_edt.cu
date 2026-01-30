@@ -11,7 +11,6 @@
 #define INF_VAL 1e20f
 #define MAX_THREADS 256
 #define SHARED_MEM_LIMIT 2048  // Max dimension size for shared memory path (48KB limit)
-#define EDT_2D_MAX_DIM 4096    // Max dimension size for 2D optimized kernels
 
 // ==============================================================================
 // 2D Optimized: Initialization kernel
@@ -284,7 +283,7 @@ __global__ void edt_2d_cols_kernel(
 }
 
 // ==============================================================================
-// 2D Optimized: Host function
+// 2D Optimized: Host function (shared memory only, for dimensions <= 2048)
 // ==============================================================================
 std::tuple<torch::Tensor, torch::Tensor> run_edt_2d_optimized(
     torch::Tensor input,
@@ -305,11 +304,10 @@ std::tuple<torch::Tensor, torch::Tensor> run_edt_2d_optimized(
     int width = shape[total_ndim - 1];
     int64_t batch_stride = (int64_t)height * width;
     int64_t batch_size = input.numel() / batch_stride;
-    int64_t total_pixels = input.numel();
 
-    // Check dimension limits for 2D optimized path
-    TORCH_CHECK(height <= EDT_2D_MAX_DIM && width <= EDT_2D_MAX_DIM,
-                "Dimensions too large for 2D optimized path");
+    // This function should only be called when both dimensions fit in shared memory
+    TORCH_CHECK(height <= SHARED_MEM_LIMIT && width <= SHARED_MEM_LIMIT,
+                "Dimensions too large for 2D optimized path, use general N-D version");
 
     // Create output tensors
     auto distance = torch::empty_like(input);
@@ -338,7 +336,7 @@ std::tuple<torch::Tensor, torch::Tensor> run_edt_2d_optimized(
         );
     }
 
-    // Step 2: Row-wise EDT (X direction)
+    // Step 2: Row-wise EDT (X direction) - shared memory
     {
         int64_t num_rows = batch_size * height;
         int threads = min(width, MAX_THREADS);
@@ -359,7 +357,7 @@ std::tuple<torch::Tensor, torch::Tensor> run_edt_2d_optimized(
         );
     }
 
-    // Step 3: Column-wise EDT (Y direction)
+    // Step 3: Column-wise EDT (Y direction) - shared memory
     {
         int64_t num_cols = batch_size * width;
         int threads = min(height, MAX_THREADS);
@@ -849,14 +847,15 @@ std::tuple<torch::Tensor, torch::Tensor> distance_transform_edt_cuda(
 
     int spatial_ndim = sampling.size();
 
-    // Use 2D optimized path when applicable
+    // Use 2D optimized path only when both dimensions fit in shared memory
+    // For larger dimensions, the N-D general version with transpose is faster
     if (spatial_ndim == 2) {
         auto shape = input.sizes().vec();
         int height = shape[total_ndim - 2];
         int width = shape[total_ndim - 1];
 
-        // Check if dimensions are within limits for 2D optimized path
-        if (height <= EDT_2D_MAX_DIM && width <= EDT_2D_MAX_DIM) {
+        // Only use 2D optimized path when shared memory can be used for both directions
+        if (height <= SHARED_MEM_LIMIT && width <= SHARED_MEM_LIMIT) {
             float spacing_y = sampling[0];
             float spacing_x = sampling[1];
 

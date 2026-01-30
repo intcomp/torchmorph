@@ -2,9 +2,37 @@
 
 // Declare CUDA implementations
 torch::Tensor add_cuda(torch::Tensor input, float scalar);
-std::tuple<torch::Tensor, torch::Tensor> distance_transform_cuda(torch::Tensor input);
+
+// Distance Transform functions
+std::tuple<torch::Tensor, torch::Tensor> distance_transform_edt_cuda(
+    torch::Tensor input,
+    std::vector<float> sampling,
+    bool return_distances,
+    bool return_indices
+);
+
+std::tuple<torch::Tensor, torch::Tensor> distance_transform_cdt_cuda(
+    torch::Tensor input,
+    const std::string& metric,
+    bool return_distances,
+    bool return_indices
+);
+
+
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("add_cuda", &add_cuda, "Add tensor with scalar");
-    m.def("distance_transform_cuda", &distance_transform_cuda, "Distance transform");
-}
+
+    // Distance Transform
+    m.def("distance_transform_edt_cuda", &distance_transform_edt_cuda,
+          "Exact Euclidean Distance Transform (Felzenszwalb algorithm)",
+          py::arg("input"),
+          py::arg("sampling"),
+          py::arg("return_distances") = true,
+          py::arg("return_indices") = false);
+    m.def("distance_transform_cdt_cuda", &distance_transform_cdt_cuda,
+          "Chamfer Distance Transform",
+          py::arg("input"),
+          py::arg("metric") = "chessboard",
+          py::arg("return_distances") = true,
+          py::arg("return_indices") = false);

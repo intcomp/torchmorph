@@ -27,9 +27,11 @@ for B in batches:
         table.align[c] = "r"
 
     for s in sizes:
-        # Inputs
+        # Inputs: (B, C, H, W) format - C=1 for single channel
         x = (torch.randn(B, 1, s, s, device=device) > 0).to(dtype)
+        # For scipy, we need (H, W) arrays
         x_np_list = [x[i, 0].detach().cpu().numpy() for i in range(B)]
+        # For torch single image processing: each is (1, 1, H, W)
         x_imgs = [x[i : i + 1] for i in range(B)]
 
         # SciPy (CPU, one-by-one)
@@ -44,7 +46,7 @@ for B in batches:
         # Torch (CUDA, one-by-one)
         stmt_torch1 = """
 for xi in x_imgs:
-    tm.distance_transform(xi)
+    tm.distance_transform_edt(xi)
 """
         t_torch1 = benchmark.Timer(
             stmt=stmt_torch1,
@@ -55,7 +57,7 @@ for xi in x_imgs:
 
         # Torch (CUDA, batched)
         t_batch = benchmark.Timer(
-            stmt="tm.distance_transform(x)",
+            stmt="tm.distance_transform_edt(x)",
             setup="from __main__ import x, tm",
             num_threads=torch.get_num_threads(),
         ).blocked_autorange(min_run_time=MIN_RUN)
