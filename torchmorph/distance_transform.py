@@ -12,6 +12,7 @@ def distance_transform_edt(
     return_indices: bool = False,
     distances: Optional[torch.Tensor] = None,
     indices: Optional[torch.Tensor] = None,
+    algorithm: str = "exact",
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor], None]:
     """Exact Euclidean Distance Transform (EDT) using Felzenszwalb algorithm.
 
@@ -23,6 +24,7 @@ def distance_transform_edt(
                   number, the spacing is uniform in all spatial dimensions. If a
                   sequence, it must match the number of spatial dimensions.
                   Default is None (unit spacing for all spatial dimensions).
+                  Note: When sampling is not unit spacing, only "exact" algorithm is used.
         return_distances: Whether to calculate the distance transform.
                           Default is True.
         return_indices: Whether to calculate the feature transform (indices
@@ -33,6 +35,12 @@ def distance_transform_edt(
         indices: Optional output tensor for indices. If provided, must have shape
                  (spatial_ndim, ...) where ... matches input shape. If None and
                  return_indices is True, a new tensor will be created and returned.
+        algorithm: Algorithm to use for distance transform. Options:
+                   - "exact": Use Felzenszwalb's exact algorithm (default).
+                   - "jfa": Use Jump Flooding Algorithm (fast but approximate).
+                            Only available for 2D/3D with unit sampling.
+                   - "auto": Automatically choose based on input (uses JFA when
+                            applicable, otherwise exact).
 
     Returns:
         Depending on return_distances, return_indices, and whether output tensors
@@ -50,6 +58,8 @@ def distance_transform_edt(
         >>> dist = tm.distance_transform_edt(x)
         >>> dist, indices = tm.distance_transform_edt(x, return_indices=True)
         >>> dist = tm.distance_transform_edt(x, sampling=[0.5, 1.0])
+        >>> # Using JFA algorithm (faster for large images)
+        >>> dist = tm.distance_transform_edt(x, algorithm="jfa")
         >>> # Using pre-allocated output tensors
         >>> dist_out = torch.empty_like(x)
         >>> tm.distance_transform_edt(x, distances=dist_out)  # Returns None, fills dist_out
@@ -61,7 +71,7 @@ def distance_transform_edt(
         raise ValueError("Input tensor must be on CUDA device.")
     if input.ndim < 3:
         raise ValueError(
-            f"Input must be (B, C, Spatial) format with at least 3 dimensions, got {input.shape}. "
+            f"Input must be (B, C, ) format with at least 3 dimensions, got {input.shape}. "
             "For single images, use unsqueeze to add batch and channel dims."
         )
     if input.numel() == 0:
@@ -107,13 +117,13 @@ def distance_transform_edt(
             sampling_list = sampling_list * spatial_ndim
         elif len(sampling_list) != spatial_ndim:
             raise ValueError(
-                f"sampling has {len(sampling_list)} but input has {spatial_ndim} spatial dims"
+                f"sampling has {len(sampling_list)} but input {spatial_ndim}  dimensions "
                 f"(input shape: {input.shape}, format: (B, C, Spatial...))"
             )
 
     # Call CUDA kernel - it handles batch dimensions based on sampling size
     raw_distances, raw_indices = _C.distance_transform_edt_cuda(
-        input, sampling_list, return_distances, return_indices
+        input, sampling_list, return_distances, return_indices, algorithm
     )
 
     # Copy to pre-allocated tensors if provided

@@ -18,10 +18,12 @@ for B in batches:
     table.field_names = [
         "Size",
         "SciPy (ms/img)",
-        "Torch 1× (ms/img)",
-        "Torch batch (ms/img)",
-        "Speedup 1×",
-        "Speedup batch",
+        "Exact 1× (ms/img)",
+        "Exact batch (ms/img)",
+        "JFA 1× (ms/img)",
+        "JFA batch (ms/img)",
+        "Speedup Exact",
+        "Speedup JFA",
     ]
     for c in table.field_names:
         table.align[c] = "r"
@@ -43,38 +45,60 @@ for B in batches:
         ).blocked_autorange(min_run_time=MIN_RUN)
         scipy_per_img_ms = (t_scipy.median * 1e3) / B
 
-        # Torch (CUDA, one-by-one)
-        stmt_torch1 = """
+        # Torch Exact (CUDA, one-by-one)
+        stmt_exact1 = """
 for xi in x_imgs:
-    tm.distance_transform_edt(xi)
+    tm.distance_transform_edt(xi, algorithm="exact")
 """
-        t_torch1 = benchmark.Timer(
-            stmt=stmt_torch1,
+        t_exact1 = benchmark.Timer(
+            stmt=stmt_exact1,
             setup="from __main__ import x_imgs, tm",
             num_threads=torch.get_num_threads(),
         ).blocked_autorange(min_run_time=MIN_RUN)
-        torch1_per_img_ms = (t_torch1.median * 1e3) / B
+        exact1_per_img_ms = (t_exact1.median * 1e3) / B
 
-        # Torch (CUDA, batched)
-        t_batch = benchmark.Timer(
-            stmt="tm.distance_transform_edt(x)",
+        # Torch Exact (CUDA, batched)
+        t_exact_batch = benchmark.Timer(
+            stmt='tm.distance_transform_edt(x, algorithm="exact")',
             setup="from __main__ import x, tm",
             num_threads=torch.get_num_threads(),
         ).blocked_autorange(min_run_time=MIN_RUN)
-        torchB_per_img_ms = (t_batch.median * 1e3) / B
+        exactB_per_img_ms = (t_exact_batch.median * 1e3) / B
 
-        # Speedups
-        speed1 = scipy_per_img_ms / torch1_per_img_ms
-        speedB = scipy_per_img_ms / torchB_per_img_ms
+        # Torch JFA (CUDA, one-by-one)
+        stmt_jfa1 = """
+for xi in x_imgs:
+    tm.distance_transform_edt(xi, algorithm="jfa")
+"""
+        t_jfa1 = benchmark.Timer(
+            stmt=stmt_jfa1,
+            setup="from __main__ import x_imgs, tm",
+            num_threads=torch.get_num_threads(),
+        ).blocked_autorange(min_run_time=MIN_RUN)
+        jfa1_per_img_ms = (t_jfa1.median * 1e3) / B
+
+        # Torch JFA (CUDA, batched)
+        t_jfa_batch = benchmark.Timer(
+            stmt='tm.distance_transform_edt(x, algorithm="jfa")',
+            setup="from __main__ import x, tm",
+            num_threads=torch.get_num_threads(),
+        ).blocked_autorange(min_run_time=MIN_RUN)
+        jfaB_per_img_ms = (t_jfa_batch.median * 1e3) / B
+
+        # Speedups (batch mode vs scipy)
+        speed_exact = scipy_per_img_ms / exactB_per_img_ms
+        speed_jfa = scipy_per_img_ms / jfaB_per_img_ms
 
         table.add_row(
             [
                 s,
                 f"{scipy_per_img_ms:.3f}",
-                f"{torch1_per_img_ms:.3f}",
-                f"{torchB_per_img_ms:.3f}",
-                f"{speed1:.1f}×",
-                f"{speedB:.1f}×",
+                f"{exact1_per_img_ms:.3f}",
+                f"{exactB_per_img_ms:.3f}",
+                f"{jfa1_per_img_ms:.3f}",
+                f"{jfaB_per_img_ms:.3f}",
+                f"{speed_exact:.1f}×",
+                f"{speed_jfa:.1f}×",
             ]
         )
 

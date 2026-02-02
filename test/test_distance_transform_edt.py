@@ -160,7 +160,7 @@ def test_distance_transform_and_indices(
         print(f"CUDA result:\n{dist_cuda.cpu().numpy()}")
         print(f"SciPy reference:\n{dist_ref.cpu().numpy()}")
 
-    torch.testing.assert_close(dist_cuda, dist_ref, atol=1e-3, rtol=1e-3)
+    torch.testing.assert_close(dist_cuda, dist_ref, atol=1e-5, rtol=1e-5)
     print(">> Distance validation passed.")
 
     # 6. Validate indices
@@ -190,8 +190,8 @@ def test_distance_transform_and_indices(
     torch.testing.assert_close(
         dist_sq_calculated,
         dist_sq_output,
-        atol=1e-3,
-        rtol=1e-3,
+        atol=1e-5,
+        rtol=1e-5,
     )
     print(">> Index validation passed.")
 
@@ -303,7 +303,7 @@ def test_distance_transform_with_sampling(
     assert (
         dist_cuda.shape == dist_ref.shape
     ), f"Shape mismatch: {dist_cuda.shape} vs {dist_ref.shape}"
-    torch.testing.assert_close(dist_cuda, dist_ref, atol=1e-3, rtol=1e-3)
+    torch.testing.assert_close(dist_cuda, dist_ref, atol=1e-5, rtol=1e-5)
     print(">> Distance validation with sampling passed.")
 
     # Validate indices shape
@@ -335,7 +335,7 @@ def test_distance_transform_with_sampling(
     dist_sq_calculated = torch.sum(diff * diff, dim=0)
     dist_sq_output = dist_cuda * dist_cuda
 
-    torch.testing.assert_close(dist_sq_calculated, dist_sq_output, atol=1e-3, rtol=1e-3)
+    torch.testing.assert_close(dist_sq_calculated, dist_sq_output, atol=1e-5, rtol=1e-5)
     print(">> Index validation with sampling passed.")
 
 
@@ -392,5 +392,107 @@ def test_single_float_sampling() -> None:
     dist_ref_numpy, _ = batch_scipy_edt_with_sampling(x_numpy, spatial_ndim, [0.5, 0.5])
     dist_ref = torch.from_numpy(dist_ref_numpy).to(torch.float32).cuda()
 
-    torch.testing.assert_close(dist_cuda, dist_ref, atol=1e-3, rtol=1e-3)
+    torch.testing.assert_close(dist_cuda, dist_ref, atol=1e-5, rtol=1e-5)
     print(">> Single float sampling test passed.")
+
+
+# ======================================================================
+# Test algorithm parameter (JFA vs Exact)
+# ======================================================================
+@pytest.mark.parametrize(
+    "input_numpy, spatial_ndim, algorithm",
+    [
+        # 2D tests with different algorithms
+        pytest.param(case_2d, 2, "exact", id="2D_exact"),
+        pytest.param(case_2d, 2, "jfa", id="2D_jfa"),
+        pytest.param(case_2d, 2, "auto", id="2D_auto"),
+        pytest.param(case_2d_single, 2, "exact", id="2D_single_exact"),
+        pytest.param(case_2d_single, 2, "jfa", id="2D_single_jfa"),
+        pytest.param(case_2d_single, 2, "auto", id="2D_single_auto"),
+        # 3D tests with different algorithms
+        pytest.param(case_3d, 3, "exact", id="3D_exact"),
+        pytest.param(case_3d, 3, "jfa", id="3D_jfa"),
+        pytest.param(case_3d, 3, "auto", id="3D_auto"),
+    ],
+)
+def test_distance_transform_algorithm(
+    input_numpy: np.ndarray,
+    spatial_ndim: int,
+    algorithm: str,
+    request: pytest.FixtureRequest,
+) -> None:
+    """Test EDT with different algorithm options (exact, jfa, auto)."""
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
+
+    x_numpy_contiguous = np.ascontiguousarray(input_numpy)
+    x_cuda = torch.from_numpy(x_numpy_contiguous).cuda()
+
+    print(f"\n\n--- Running test: {request.node.callspec.id} ---")
+    print(f"CUDA input shape: {x_cuda.shape}, spatial_ndim: {spatial_ndim}, algorithm: {algorithm}")
+
+    # Run CUDA EDT with specified algorithm
+    dist_cuda = tm.distance_transform_edt(x_cuda.clone(), algorithm=algorithm)
+
+    # Run SciPy (ground truth)
+    dist_ref_numpy, _ = batch_scipy_edt_with_indices(x_numpy_contiguous, spatial_ndim)
+    dist_ref = torch.from_numpy(dist_ref_numpy).to(torch.float32).cuda()
+
+    # Validate distances
+    print(f"CUDA distance shape: {dist_cuda.shape}, reference shape: {dist_ref.shape}")
+    assert (
+        dist_cuda.shape == dist_ref.shape
+    ), f"Shape mismatch: {dist_cuda.shape} vs {dist_ref.shape}"
+
+    torch.testing.assert_close(dist_cuda, dist_ref, rtol=1e-5, atol=1e-5)
+
+    print(f">> Algorithm '{algorithm}' validation passed.")
+
+
+def test_algorithm_fallback_with_sampling() -> None:
+    """Test that JFA falls back to exact when sampling is provided."""
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
+
+    x_numpy = case_2d_single
+    x_cuda = torch.from_numpy(x_numpy).cuda()
+
+    # With non-unit sampling, JFA should fall back to exact algorithm
+    # Both should give same result
+    dist_jfa = tm.distance_transform_edt(x_cuda.clone(), sampling=[0.5, 1.0], algorithm="jfa")
+    dist_exact = tm.distance_transform_edt(x_cuda.clone(), sampling=[0.5, 1.0], algorithm="exact")
+
+    # Compare with scipy
+    spatial_ndim = 2
+    dist_ref_numpy, _ = batch_scipy_edt_with_sampling(x_numpy, spatial_ndim, [0.5, 1.0])
+    dist_ref = torch.from_numpy(dist_ref_numpy).to(torch.float32).cuda()
+
+    torch.testing.assert_close(dist_jfa, dist_ref, atol=1e-5, rtol=1e-5)
+    torch.testing.assert_close(dist_exact, dist_ref, atol=1e-5, rtol=1e-5)
+
+    print(">> Algorithm fallback with sampling test passed.")
+
+
+def test_jfa_vs_exact_consistency() -> None:
+    """Test that JFA and exact produce similar results for unit sampling."""
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
+
+    # Create a larger random test case
+    torch.manual_seed(42)
+    x = (torch.randn(2, 1, 64, 64, device="cuda") > 0).float()
+
+    dist_exact = tm.distance_transform_edt(x, algorithm="exact")
+    dist_jfa = tm.distance_transform_edt(x, algorithm="jfa")
+
+    # JFA should be very close to exact for most pixels
+    # Allow for small differences due to JFA's approximate nature
+    diff = torch.abs(dist_exact - dist_jfa)
+    max_diff = diff.max().item()
+    mean_diff = diff.mean().item()
+
+    print(f"JFA vs Exact - Max diff: {max_diff:.6f}, Mean diff: {mean_diff:.6f}")
+
+    # Most pixels should be exact or very close
+    assert mean_diff < 0.1, f"Mean difference too large: {mean_diff}"
+    print(">> JFA vs Exact consistency test passed.")

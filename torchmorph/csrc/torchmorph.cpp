@@ -8,7 +8,8 @@ std::tuple<torch::Tensor, torch::Tensor> distance_transform_edt_cuda(
     torch::Tensor input,
     std::vector<float> sampling,
     bool return_distances,
-    bool return_indices
+    bool return_indices,
+    const std::string& algorithm
 );
 
 std::tuple<torch::Tensor, torch::Tensor> distance_transform_cdt_cuda(
@@ -17,7 +18,6 @@ std::tuple<torch::Tensor, torch::Tensor> distance_transform_cdt_cuda(
     bool return_distances,
     bool return_indices
 );
-
 
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -29,10 +29,12 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           py::arg("input"),
           py::arg("sampling"),
           py::arg("return_distances") = true,
-          py::arg("return_indices") = false);
+          py::arg("return_indices") = false,
+          py::arg("algorithm") = "exact");
     m.def("distance_transform_cdt_cuda", &distance_transform_cdt_cuda,
           "Chamfer Distance Transform",
           py::arg("input"),
           py::arg("metric") = "chessboard",
           py::arg("return_distances") = true,
           py::arg("return_indices") = false);
+}
