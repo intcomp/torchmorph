@@ -20,7 +20,7 @@ jobs:
               echo "CUDA_HOME=$CUDA_HOME"
               pip install -r requirements-dev.txt --break-system-packages --user
               pip uninstall torchmorph --yes --break-system-packages
-              python setup.py install --user
+              python3 setup.py install --user
           - run: |
               ORIGINAL=$(pwd)
               cd /tmp
