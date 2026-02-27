@@ -261,7 +261,7 @@ __global__ void cdt_diagonal_pass_kernel(
 // Taxicab metric uses simpler dimension-separable sweeps (no diagonals)
 // ============================================================================
 
-std::tuple<torch::Tensor, torch::Tensor> distance_transform_cdt_cuda(
+std::tuple<torch::Tensor, torch::Tensor> cdt_cuda(
     torch::Tensor input,
     const std::string& metric,
     bool return_distances,

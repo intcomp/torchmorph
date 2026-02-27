@@ -5,7 +5,7 @@ import torch
 from torchmorph import _C
 
 
-def distance_transform_edt(
+def euclidean_distance_transform(
     input: torch.Tensor,
     sampling: Optional[Union[float, Sequence[float]]] = None,
     return_distances: bool = True,
@@ -55,17 +55,17 @@ def distance_transform_edt(
         >>> # 2D image: (B, C, H, W)
         >>> x = torch.zeros(1, 1, 64, 64, device='cuda')
         >>> x[0, 0, 10:20, 10:20] = 1
-        >>> dist = tm.distance_transform_edt(x)
-        >>> dist, indices = tm.distance_transform_edt(x, return_indices=True)
-        >>> dist = tm.distance_transform_edt(x, sampling=[0.5, 1.0])
+        >>> dist = tm.euclidean_distance_transform(x)
+        >>> dist, indices = tm.euclidean_distance_transform(x, return_indices=True)
+        >>> dist = tm.euclidean_distance_transform(x, sampling=[0.5, 1.0])
         >>> # Using JFA algorithm (faster for large images)
-        >>> dist = tm.distance_transform_edt(x, algorithm="jfa")
+        >>> dist = tm.euclidean_distance_transform(x, algorithm="jfa")
         >>> # Using pre-allocated output tensors
         >>> dist_out = torch.empty_like(x)
-        >>> tm.distance_transform_edt(x, distances=dist_out)  # Returns None, fills dist_out
+        >>> tm.euclidean_distance_transform(x, distances=dist_out)  # Returns None, fills dist_out
         >>> # 3D volume: (B, C, D, H, W)
         >>> x_3d = torch.zeros(2, 1, 32, 64, 64, device='cuda')
-        >>> dist_3d = tm.distance_transform_edt(x_3d, sampling=[2.0, 1.0, 1.0])
+        >>> dist_3d = tm.euclidean_distance_transform(x_3d, sampling=[2.0, 1.0, 1.0])
     """
     if not input.is_cuda:
         raise ValueError("Input tensor must be on CUDA device.")
@@ -148,7 +148,7 @@ def distance_transform_edt(
         return None
 
 
-def distance_transform_cdt(
+def chamfer_distance_transform(
     input: torch.Tensor,
     metric: str = "chessboard",
     return_distances: bool = True,
@@ -195,12 +195,12 @@ def distance_transform_cdt(
         >>> # 2D image with batch: (B, C, H, W)
         >>> x = torch.zeros(1, 1, 64, 64, device='cuda')
         >>> x[0, 0, 10:20, 10:20] = 1
-        >>> dist = tm.distance_transform_cdt(x)  # chessboard by default
-        >>> dist = tm.distance_transform_cdt(x, metric='taxicab')
-        >>> dist, indices = tm.distance_transform_cdt(x, return_indices=True)
+        >>> dist = tm.chamfer_distance_transform(x)  # chessboard by default
+        >>> dist = tm.chamfer_distance_transform(x, metric='taxicab')
+        >>> dist, indices = tm.chamfer_distance_transform(x, return_indices=True)
         >>> # Using pre-allocated output tensors
         >>> dist_out = torch.empty_like(x)
-        >>> tm.distance_transform_cdt(x, distances=dist_out)  # Returns None, fills dist_out
+        >>> tm.chamfer_distance_transform(x, distances=dist_out)  # Returns None, fills dist_out
     """
     if not input.is_cuda:
         raise ValueError("Input tensor must be on CUDA device.")
@@ -238,9 +238,7 @@ def distance_transform_cdt(
         return_indices = True
 
     # Call CUDA kernel
-    raw_distances, raw_indices = _C.cdt_cuda(
-        input, metric, return_distances, return_indices
-    )
+    raw_distances, raw_indices = _C.cdt_cuda(input, metric, return_distances, return_indices)
 
     # Copy to pre-allocated tensors if provided
     if distances is not None and raw_distances is not None:
@@ -262,21 +260,3 @@ def distance_transform_cdt(
         return raw_indices
     else:
         return None
-
-
-# Backward compatibility alias
-def distance_transform(
-    input: torch.Tensor,
-    sampling: Optional[Union[float, Sequence[float]]] = None,
-    return_distances: bool = True,
-    return_indices: bool = False,
-    distances: Optional[torch.Tensor] = None,
-    indices: Optional[torch.Tensor] = None,
-) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor], None]:
-    """Distance Transform (alias for distance_transform_edt).
-
-    See distance_transform_edt for full documentation.
-    """
-    return distance_transform_edt(
-        input, sampling, return_distances, return_indices, distances, indices
-    )

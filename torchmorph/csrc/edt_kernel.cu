@@ -58,7 +58,7 @@ __device__ __forceinline__ float dist_sq_int2(int y, int x, int2 seed) {
 // ==============================================================================
 // JFA 2D Kernels (Vectorized int2 + Block Shared)
 // ==============================================================================
-__global__ void init_jfa_kernel_2d_opt(
+__global__ void init_jfa_2d_opt_kernel(
     const float* __restrict__ input,
     int2* __restrict__ output,
     int64_t total_elements,
@@ -78,7 +78,7 @@ __global__ void init_jfa_kernel_2d_opt(
     }
 }
 
-__global__ void jfa_block_fused_kernel_2d(
+__global__ void jfa_block_fused_2d_kernel(
     const int2* __restrict__ in_idx,
     int2* __restrict__ out_idx,
     int H, int W,
@@ -153,7 +153,7 @@ __global__ void jfa_block_fused_kernel_2d(
     }
 }
 
-__global__ void jfa_step_global_2d_opt(
+__global__ void jfa_step_global_2d_opt_kernel(
     const int2* __restrict__ in_idx,
     int2* __restrict__ out_idx,
     int step,
@@ -196,7 +196,7 @@ __global__ void jfa_step_global_2d_opt(
     out_idx[tid] = best_seed;
 }
 
-__global__ void calc_dist_kernel_2d_opt(
+__global__ void calc_dist_2d_opt_kernel(
     const int2* __restrict__ indices,
     float* __restrict__ dist_out,
     int64_t total_elements,
@@ -221,7 +221,7 @@ __global__ void calc_dist_kernel_2d_opt(
 // JFA 3D Kernels (Optimized SoA Layout)
 // ==============================================================================
 template <typename IndexType>
-__global__ void init_jfa_kernel_3d_soa(
+__global__ void init_jfa_3d_soa_kernel(
     const float* __restrict__ input,
     IndexType* __restrict__ indices_z,
     IndexType* __restrict__ indices_y,
@@ -250,7 +250,7 @@ __global__ void init_jfa_kernel_3d_soa(
 }
 
 template <typename IndexType>
-__global__ void jfa_block_fused_kernel_3d_soa(
+__global__ void jfa_block_fused_3d_soa_kernel(
     const IndexType* __restrict__ in_z,
     const IndexType* __restrict__ in_y,
     const IndexType* __restrict__ in_x,
@@ -375,7 +375,7 @@ __global__ void jfa_block_fused_kernel_3d_soa(
 }
 
 template <typename IndexType>
-__global__ void jfa_step_3d_soa(
+__global__ void jfa_step_3d_soa_kernel(
     const IndexType* __restrict__ in_z,
     const IndexType* __restrict__ in_y,
     const IndexType* __restrict__ in_x,
@@ -445,7 +445,7 @@ __global__ void jfa_step_3d_soa(
 }
 
 template <typename IndexType>
-__global__ void calc_dist_kernel_3d_soa(
+__global__ void calc_dist_3d_soa_kernel(
     const IndexType* __restrict__ in_z,
     const IndexType* __restrict__ in_y,
     const IndexType* __restrict__ in_x,
@@ -861,7 +861,7 @@ std::tuple<torch::Tensor, torch::Tensor> run_edt_2d_optimized(
 // ==============================================================================
 // 1D EDT kernel using GLOBAL memory (for large dimensions)
 // ==============================================================================
-__global__ void edt_1d_kernel_global(
+__global__ void edt_1d_global_kernel(
     const float* __restrict__ input,
     float* __restrict__ output,
     const int* __restrict__ input_idx,
@@ -1255,7 +1255,7 @@ std::tuple<torch::Tensor, torch::Tensor> run_edt_separable(
                 g_k = torch::empty({num_slices}, dist_transposed.options().dtype(torch::kInt32));
             }
 
-            edt_1d_kernel_global<<<num_slices, kernel_threads>>>(
+            edt_1d_global_kernel<<<num_slices, kernel_threads>>>(
                 dist_transposed.data_ptr<float>(),
                 dist_out.data_ptr<float>(),
                 return_indices ? idx_transposed.data_ptr<int>() : nullptr,
@@ -1300,7 +1300,7 @@ std::tuple<torch::Tensor, torch::Tensor> run_jfa_2d(
     int2* d_curr = (int2*)curr_idx.data_ptr<int32_t>();
     int2* d_next = (int2*)next_idx.data_ptr<int32_t>();
 
-    init_jfa_kernel_2d_opt<<<grid, block>>>(
+    init_jfa_2d_opt_kernel<<<grid, block>>>(
         input.data_ptr<float>(), d_curr, numel, H, W
     );
 
@@ -1311,7 +1311,7 @@ std::tuple<torch::Tensor, torch::Tensor> run_jfa_2d(
                      (H + JFA_BLOCK_DIM - 1) / JFA_BLOCK_DIM,
                      batch_size);
 
-        jfa_block_fused_kernel_2d<<<dimGrid, dimBlock>>>(d_curr, d_next, H, W, batch_size);
+        jfa_block_fused_2d_kernel<<<dimGrid, dimBlock>>>(d_curr, d_next, H, W, batch_size);
         std::swap(d_curr, d_next);
         std::swap(curr_idx, next_idx);
     }
@@ -1320,14 +1320,14 @@ std::tuple<torch::Tensor, torch::Tensor> run_jfa_2d(
     int step = 16;
 
     while (step < max_dim) {
-        jfa_step_global_2d_opt<<<grid, block>>>(d_curr, d_next, step, H, W, numel);
+        jfa_step_global_2d_opt_kernel<<<grid, block>>>(d_curr, d_next, step, H, W, numel);
         std::swap(d_curr, d_next);
         std::swap(curr_idx, next_idx);
         step *= 2;
     }
 
     auto final_dist = torch::empty_like(input);
-    calc_dist_kernel_2d_opt<<<grid, block>>>(d_curr, final_dist.data_ptr<float>(), numel, H, W);
+    calc_dist_2d_opt_kernel<<<grid, block>>>(d_curr, final_dist.data_ptr<float>(), numel, H, W);
 
     return std::make_tuple(final_dist, curr_idx);
 }
@@ -1351,12 +1351,12 @@ std::tuple<torch::Tensor, torch::Tensor> run_jfa_3d(
     // 1. Init
     if (use_int16) {
         int16_t* ptr = (int16_t*)d_curr;
-        init_jfa_kernel_3d_soa<int16_t><<<grid, block>>>(
+        init_jfa_3d_soa_kernel<int16_t><<<grid, block>>>(
             input.data_ptr<float>(), ptr, ptr + plane_stride, ptr + 2 * plane_stride, numel, D, H, W
         );
     } else {
         int32_t* ptr = (int32_t*)d_curr;
-        init_jfa_kernel_3d_soa<int32_t><<<grid, block>>>(
+        init_jfa_3d_soa_kernel<int32_t><<<grid, block>>>(
             input.data_ptr<float>(), ptr, ptr + plane_stride, ptr + 2 * plane_stride, numel, D, H, W
         );
     }
@@ -1371,7 +1371,7 @@ std::tuple<torch::Tensor, torch::Tensor> run_jfa_3d(
     if (use_int16) {
         int16_t* c = (int16_t*)d_curr;
         int16_t* n = (int16_t*)d_next;
-        jfa_block_fused_kernel_3d_soa<int16_t><<<fused_grid, fused_block, smem_bytes>>>(
+        jfa_block_fused_3d_soa_kernel<int16_t><<<fused_grid, fused_block, smem_bytes>>>(
             c, c + plane_stride, c + 2 * plane_stride,
             n, n + plane_stride, n + 2 * plane_stride,
             D, H, W, blocks_per_d
@@ -1379,7 +1379,7 @@ std::tuple<torch::Tensor, torch::Tensor> run_jfa_3d(
     } else {
         int32_t* c = (int32_t*)d_curr;
         int32_t* n = (int32_t*)d_next;
-        jfa_block_fused_kernel_3d_soa<int32_t><<<fused_grid, fused_block, smem_bytes>>>(
+        jfa_block_fused_3d_soa_kernel<int32_t><<<fused_grid, fused_block, smem_bytes>>>(
             c, c + plane_stride, c + 2 * plane_stride,
             n, n + plane_stride, n + 2 * plane_stride,
             D, H, W, blocks_per_d
@@ -1394,7 +1394,7 @@ std::tuple<torch::Tensor, torch::Tensor> run_jfa_3d(
         if (use_int16) {
             int16_t* c = (int16_t*)d_curr;
             int16_t* n = (int16_t*)d_next;
-            jfa_step_3d_soa<int16_t><<<grid, block>>>(
+            jfa_step_3d_soa_kernel<int16_t><<<grid, block>>>(
                 c, c + plane_stride, c + 2 * plane_stride,
                 n, n + plane_stride, n + 2 * plane_stride,
                 step, D, H, W, numel
@@ -1402,7 +1402,7 @@ std::tuple<torch::Tensor, torch::Tensor> run_jfa_3d(
         } else {
             int32_t* c = (int32_t*)d_curr;
             int32_t* n = (int32_t*)d_next;
-            jfa_step_3d_soa<int32_t><<<grid, block>>>(
+            jfa_step_3d_soa_kernel<int32_t><<<grid, block>>>(
                 c, c + plane_stride, c + 2 * plane_stride,
                 n, n + plane_stride, n + 2 * plane_stride,
                 step, D, H, W, numel
@@ -1416,13 +1416,13 @@ std::tuple<torch::Tensor, torch::Tensor> run_jfa_3d(
     auto final_dist = torch::empty_like(input);
     if (use_int16) {
         int16_t* c = (int16_t*)d_curr;
-        calc_dist_kernel_3d_soa<int16_t><<<grid, block>>>(
+        calc_dist_3d_soa_kernel<int16_t><<<grid, block>>>(
             c, c + plane_stride, c + 2 * plane_stride,
             final_dist.data_ptr<float>(), numel, D, H, W
         );
     } else {
         int32_t* c = (int32_t*)d_curr;
-        calc_dist_kernel_3d_soa<int32_t><<<grid, block>>>(
+        calc_dist_3d_soa_kernel<int32_t><<<grid, block>>>(
             c, c + plane_stride, c + 2 * plane_stride,
             final_dist.data_ptr<float>(), numel, D, H, W
         );
@@ -1494,7 +1494,7 @@ std::tuple<torch::Tensor, torch::Tensor> distance_transform_cuda(torch::Tensor i
 // Python binding entry point
 // ==============================================================================
 
-std::tuple<torch::Tensor, torch::Tensor> distance_transform_edt_cuda(
+std::tuple<torch::Tensor, torch::Tensor> edt_cuda(
     torch::Tensor input,
     std::vector<float> sampling,
     bool return_distances,
