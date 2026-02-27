@@ -122,7 +122,7 @@ def distance_transform_edt(
             )
 
     # Call CUDA kernel - it handles batch dimensions based on sampling size
-    raw_distances, raw_indices = _C.distance_transform_edt_cuda(
+    raw_distances, raw_indices = _C.edt_cuda(
         input, sampling_list, return_distances, return_indices, algorithm
     )
 
@@ -238,7 +238,7 @@ def distance_transform_cdt(
         return_indices = True
 
     # Call CUDA kernel
-    raw_distances, raw_indices = _C.distance_transform_cdt_cuda(
+    raw_distances, raw_indices = _C.cdt_cuda(
         input, metric, return_distances, return_indices
     )
 
