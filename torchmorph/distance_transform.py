@@ -260,3 +260,123 @@ def chamfer_distance_transform(
         return raw_indices
     else:
         return None
+
+
+def brute_force_distance_transform(
+    input: torch.Tensor,
+    metric: str = "euclidean",
+    sampling: Optional[Union[float, Sequence[float]]] = None,
+    return_distances: bool = True,
+    return_indices: bool = False,
+    distances: Optional[torch.Tensor] = None,
+    indices: Optional[torch.Tensor] = None,
+) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor], None]:
+    """Brute-force distance transform.
+
+    Calculates the distance transform of the input using a brute-force algorithm.
+    The algorithm computes the distance from each foreground pixel to ALL
+    background pixels and finds the minimum. This is $O(N*M)$ where $N$ is
+    number of foreground pixels and $M$ is number of background pixels.
+
+    Args:
+        input: Binary input tensor (0 = background, non-zero = foreground).
+               Must be in (B, C, Spatial...) format.
+        metric: Distance metric to use:
+                - "euclidean": L2 norm (default).
+                - "taxicab": L1 norm (Manhattan distance).
+                - "chessboard": L-infinity norm (Chebyshev distance).
+        sampling: Spacing of elements along each spatial dimension. If a single
+                  number, the spacing is uniform in all spatial dimensions. If a
+                  sequence, it must match the number of spatial dimensions.
+                  Default is None (unit spacing for all spatial dimensions).
+        return_distances: Whether to calculate the distance transform.
+                          Default is True.
+        return_indices: Whether to calculate the feature transform (indices
+                        of closest background element). Default is False.
+        distances: Optional output tensor for distances. If provided, must have
+                   the same shape as input.
+        indices: Optional output tensor for indices. If provided, must have shape
+                 (spatial_ndim, ...) where ... matches input shape.
+
+    Returns:
+        Depending on return_distances, return_indices, and whether output tensors
+        are provided:
+            - Returns distance tensor only when return_distances=True and distances=None
+            - Returns indices tensor only when return_indices=True and indices=None
+            - Returns tuple of (distances, indices) when both conditions above are met
+            - Returns None if output tensors are provided for all requested outputs
+    """
+    if not input.is_cuda:
+        raise ValueError("Input tensor must be on CUDA device.")
+    if input.ndim < 3:
+        raise ValueError(
+            f"Input must be (B, C, ) format with at least 3 dimensions, got {input.shape}."
+        )
+    if input.numel() == 0:
+        raise ValueError(f"Invalid input: empty tensor with shape {input.shape}.")
+
+    if metric not in ("euclidean", "taxicab", "chessboard"):
+        raise ValueError("metric must be 'euclidean', 'taxicab', or 'chessboard'.")
+
+    # Validate pre-allocated output tensors
+    if distances is not None:
+        if distances.shape != input.shape:
+            raise ValueError(
+                f"distances shape {distances.shape} must match input shape {input.shape}"
+            )
+        if not distances.is_cuda:
+            raise ValueError("distances tensor must be on CUDA device.")
+        return_distances = True
+
+    if indices is not None:
+        if not indices.is_cuda:
+            raise ValueError("indices tensor must be on CUDA device.")
+        return_indices = True
+
+    if not return_distances and not return_indices:
+        raise ValueError(
+            "At least one of return_distances or return_indices must be True, "
+            "or output tensors must be provided."
+        )
+
+    input = input.float().contiguous()
+    spatial_ndim = input.ndim - 2
+
+    # Process sampling parameter
+    if sampling is None:
+        sampling_list = [1.0] * spatial_ndim
+    elif isinstance(sampling, (int, float)):
+        sampling_list = [float(sampling)] * spatial_ndim
+    else:
+        sampling_list = [float(s) for s in sampling]
+        if len(sampling_list) == 1:
+            sampling_list = sampling_list * spatial_ndim
+        elif len(sampling_list) != spatial_ndim:
+            raise ValueError(
+                f"sampling has {len(sampling_list)} but input {spatial_ndim} dimensions."
+            )
+
+    # Call CUDA kernel
+    raw_distances, raw_indices = _C.bfdt_cuda(
+        input, metric, sampling_list, return_distances, return_indices
+    )
+
+    # Copy to pre-allocated tensors if provided
+    if distances is not None and raw_distances is not None:
+        distances.copy_(raw_distances)
+
+    if indices is not None and raw_indices is not None:
+        indices.copy_(raw_indices)
+
+    # Return based on scipy convention
+    return_dist_tensor = return_distances and distances is None
+    return_idx_tensor = return_indices and indices is None
+
+    if return_dist_tensor and return_idx_tensor:
+        return raw_distances, raw_indices
+    elif return_dist_tensor:
+        return raw_distances
+    elif return_idx_tensor:
+        return raw_indices
+    else:
+        return None

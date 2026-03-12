@@ -313,21 +313,86 @@ for xi in x_imgs:
             print(table)
 
 
+# ======================================================================
+# Section 4: Brute-Force Distance Transform (BFDT)
+# ======================================================================
+
+
+def bench_bfdt():
+    # BFDT is slow, so we use smaller sizes
+    bf_sizes = [32, 64, 128, 256]
+    for metric in ["euclidean", "taxicab", "chessboard"]:
+        print(f"\n{'=' * 60}")
+        print(f"  BFDT Benchmark - Metric: {metric}")
+        print(f"{'=' * 60}")
+
+        table = PrettyTable()
+        table.field_names = [
+            "Size",
+            "SciPy (ms/img)",
+            "Torch (ms/img)",
+            "Speedup",
+        ]
+        for c in table.field_names:
+            table.align[c] = "r"
+
+        for s in bf_sizes:
+            # Single batch for BFDT to avoid excessive wait
+            B = 1
+            x = (torch.randn(B, 1, s, s, device=device) > 0).to(dtype)
+            x_np_list = [x[i, 0].detach().cpu().numpy() for i in range(B)]
+
+            globals().update(x=x, x_np_list=x_np_list)
+
+            # SciPy
+            stmt_scipy = (
+                f"out = [ndi.distance_transform_bf(arr, metric='{metric}') for arr in x_np_list]"
+            )
+            t_scipy = benchmark.Timer(
+                stmt=stmt_scipy,
+                setup="from __main__ import x_np_list, ndi",
+                num_threads=torch.get_num_threads(),
+            ).blocked_autorange(min_run_time=0.5)
+            scipy_ms = (t_scipy.median * 1e3) / B
+
+            # Torch
+            stmt_torch = f"tm.brute_force_distance_transform(x, metric='{metric}')"
+            t_torch = benchmark.Timer(
+                stmt=stmt_torch,
+                setup="from __main__ import x, tm",
+                num_threads=torch.get_num_threads(),
+            ).blocked_autorange(min_run_time=0.5)
+            torch_ms = (t_torch.median * 1e3) / B
+
+            table.add_row(
+                [
+                    f"{s}x{s}",
+                    f"{scipy_ms:.3f}",
+                    f"{torch_ms:.3f}",
+                    f"{scipy_ms / torch_ms:.1f}×",
+                ]
+            )
+
+        print(table)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Distance Transform Benchmarks")
     parser.add_argument(
         "--section",
         nargs="*",
-        choices=["edt-2d", "edt-3d", "cdt"],
+        choices=["edt-2d", "edt-3d", "cdt", "bfdt"],
         default=None,
         help="Sections to run (default: all)",
     )
     args = parser.parse_args()
 
-    sections = args.section if args.section else ["edt-2d", "edt-3d", "cdt"]
+    sections = args.section if args.section else ["edt-2d", "edt-3d", "cdt", "bfdt"]
     if "edt-2d" in sections:
         bench_edt_2d()
     if "edt-3d" in sections:
         bench_edt_3d()
     if "cdt" in sections:
         bench_cdt_2d()
+    if "bfdt" in sections:
+        bench_bfdt()
