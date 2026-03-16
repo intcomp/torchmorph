@@ -16,7 +16,7 @@
 // ============================================================================
 
 template <int MetricType, int NDIM>
-__global__ void bfdt_optimized_kernel(
+__global__ void bfdt_kernel(
     const int* __restrict__ foreground_coords,  // [num_foreground, NDIM]
     const int* __restrict__ background_coords,  // [num_background, NDIM]
     float* __restrict__ dist_out,               // [num_foreground]
@@ -130,14 +130,14 @@ __global__ void bfdt_optimized_kernel(
 
 #define DISPATCH_NDIM_AND_METRIC(METRIC_TYPE, NDIM_VAL, ...) \
     switch (NDIM_VAL) { \
-        case 1: bfdt_optimized_kernel<METRIC_TYPE, 1><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
-        case 2: bfdt_optimized_kernel<METRIC_TYPE, 2><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
-        case 3: bfdt_optimized_kernel<METRIC_TYPE, 3><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
-        case 4: bfdt_optimized_kernel<METRIC_TYPE, 4><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
-        case 5: bfdt_optimized_kernel<METRIC_TYPE, 5><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
-        case 6: bfdt_optimized_kernel<METRIC_TYPE, 6><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
-        case 7: bfdt_optimized_kernel<METRIC_TYPE, 7><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
-        case 8: bfdt_optimized_kernel<METRIC_TYPE, 8><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
+        case 1: bfdt_kernel<METRIC_TYPE, 1><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
+        case 2: bfdt_kernel<METRIC_TYPE, 2><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
+        case 3: bfdt_kernel<METRIC_TYPE, 3><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
+        case 4: bfdt_kernel<METRIC_TYPE, 4><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
+        case 5: bfdt_kernel<METRIC_TYPE, 5><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
+        case 6: bfdt_kernel<METRIC_TYPE, 6><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
+        case 7: bfdt_kernel<METRIC_TYPE, 7><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
+        case 8: bfdt_kernel<METRIC_TYPE, 8><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
         default: TORCH_CHECK(false, "Unsupported number of dimensions: ", NDIM_VAL); \
     }
 
@@ -212,8 +212,10 @@ std::tuple<torch::Tensor, torch::Tensor> bfdt_cuda(
         get_coords(fg_indices_flat, fg_coords);
         get_coords(bg_indices_flat, bg_coords);
 
-        auto batch_dist = torch::empty({num_fg}, input.options());
-        auto batch_indices = torch::empty({ndim, num_fg}, input.options().dtype(torch::kInt32));
+        auto batch_dist = return_distance ? 
+        torch::empty({num_fg}, input.options()) : torch::Tensor();
+        auto batch_indices = return_indices ? torch::empty({ndim, num_fg},
+        input.options().dtype(torch::kInt32)) : torch::Tensor();
 
         int threads = BFDT_BLOCK_SIZE;
         int blocks = (num_fg + threads - 1) / threads;
