@@ -15,15 +15,14 @@
 // MetricType: 0=Euclidean, 1=Taxicab(L1), 2=Chessboard(L-inf)
 // ============================================================================
 
-template <int MetricType>
+template <int MetricType, int NDIM>
 __global__ void bfdt_optimized_kernel(
-    const int* __restrict__ foreground_coords,  // [num_foreground, ndim]
-    const int* __restrict__ background_coords,  // [num_background, ndim]
+    const int* __restrict__ foreground_coords,  // [num_foreground, NDIM]
+    const int* __restrict__ background_coords,  // [num_background, NDIM]
     float* __restrict__ dist_out,               // [num_foreground]
-    int* __restrict__ indices_out,              // [ndim, num_foreground]
+    int* __restrict__ indices_out,              // [NDIM, num_foreground]
     int num_foreground,
     int num_background,
-    int ndim,
     const float* __restrict__ sampling,
     bool return_distances,
     bool return_indices
@@ -33,11 +32,11 @@ __global__ void bfdt_optimized_kernel(
 
     // 1. Register pre-computation: Load the current foreground point's coordinates,
     // apply sampling, and convert to float upfront to avoid repeating this in the loop.
-    float my_coords_f[BFDT_MAX_NDIM];
+    float my_coords_f[NDIM];
     if (f_idx < num_foreground) {
         #pragma unroll
-        for (int d = 0; d < ndim; d++) {
-            my_coords_f[d] = (float)foreground_coords[f_idx * ndim + d] * sampling[d];
+        for (int d = 0; d < NDIM; d++) {
+            my_coords_f[d] = (float)foreground_coords[f_idx * NDIM + d] * sampling[d];
         }
     }
 
@@ -55,8 +54,8 @@ __global__ void bfdt_optimized_kernel(
         int bg_load_idx = tile + tid;
         if (bg_load_idx < num_background) {
             #pragma unroll
-            for (int d = 0; d < ndim; d++) {
-                shared_bg[tid * ndim + d] = (float)background_coords[bg_load_idx * ndim + d] * sampling[d];
+            for (int d = 0; d < NDIM; d++) {
+                shared_bg[tid * NDIM + d] = (float)background_coords[bg_load_idx * NDIM + d] * sampling[d];
             }
         }
         
@@ -75,19 +74,19 @@ __global__ void bfdt_optimized_kernel(
                 // resulting in zero runtime 'if' overhead.
                 if (MetricType == 0) { // Euclidean (Compare squared distances, no sqrt here)
                     #pragma unroll
-                    for (int d = 0; d < ndim; d++) {
-                        float diff = my_coords_f[d] - shared_bg[i * ndim + d];
+                    for (int d = 0; d < NDIM; d++) {
+                        float diff = my_coords_f[d] - shared_bg[i * NDIM + d];
                         dist += diff * diff; // FMA instruction
                     }
                 } else if (MetricType == 1) { // Taxicab (L1)
                     #pragma unroll
-                    for (int d = 0; d < ndim; d++) {
-                        dist += fabsf(my_coords_f[d] - shared_bg[i * ndim + d]);
+                    for (int d = 0; d < NDIM; d++) {
+                        dist += fabsf(my_coords_f[d] - shared_bg[i * NDIM + d]);
                     }
                 } else if (MetricType == 2) { // Chessboard (L-inf)
                     #pragma unroll
-                    for (int d = 0; d < ndim; d++) {
-                        dist = fmaxf(dist, fabsf(my_coords_f[d] - shared_bg[i * ndim + d]));
+                    for (int d = 0; d < NDIM; d++) {
+                        dist = fmaxf(dist, fabsf(my_coords_f[d] - shared_bg[i * NDIM + d]));
                     }
                 }
 
@@ -116,13 +115,32 @@ __global__ void bfdt_optimized_kernel(
 
         if (return_indices && best_bg_idx != -1) {
             #pragma unroll
-            for (int d = 0; d < ndim; d++) {
+            for (int d = 0; d < NDIM; d++) {
                 // Fetch the original integer background coordinates directly from global memory
-                indices_out[d * num_foreground + f_idx] = background_coords[best_bg_idx * ndim + d];
+                indices_out[d * num_foreground + f_idx] = background_coords[best_bg_idx * NDIM + d];
             }
         }
     }
 }
+
+
+// ============================================================================
+// define dispatch ndim macro
+// ============================================================================
+
+#define DISPATCH_NDIM_AND_METRIC(METRIC_TYPE, NDIM_VAL, ...) \
+    switch (NDIM_VAL) { \
+        case 1: bfdt_optimized_kernel<METRIC_TYPE, 1><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
+        case 2: bfdt_optimized_kernel<METRIC_TYPE, 2><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
+        case 3: bfdt_optimized_kernel<METRIC_TYPE, 3><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
+        case 4: bfdt_optimized_kernel<METRIC_TYPE, 4><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
+        case 5: bfdt_optimized_kernel<METRIC_TYPE, 5><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
+        case 6: bfdt_optimized_kernel<METRIC_TYPE, 6><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
+        case 7: bfdt_optimized_kernel<METRIC_TYPE, 7><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
+        case 8: bfdt_optimized_kernel<METRIC_TYPE, 8><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
+        default: TORCH_CHECK(false, "Unsupported number of dimensions: ", NDIM_VAL); \
+    }
+
 
 // ============================================================================
 // Host Implementation
@@ -204,24 +222,24 @@ std::tuple<torch::Tensor, torch::Tensor> bfdt_cuda(
         // Dispatch to different template instantiations based on metric type 
         // to guarantee zero-overhead branching inside the inner loops.
         if (metric_type == 0) {
-            bfdt_optimized_kernel<0><<<blocks, threads,shared_mem_bytes>>>(
+            DISPATCH_NDIM_AND_METRIC(0, ndim,
                 fg_coords.data_ptr<int>(), bg_coords.data_ptr<int>(),
                 batch_dist.data_ptr<float>(), batch_indices.data_ptr<int>(),
-                num_fg, num_bg, ndim, sampling_tensor.data_ptr<float>(),
+                num_fg, num_bg, sampling_tensor.data_ptr<float>(),
                 return_distances, return_indices
             );
         } else if (metric_type == 1) {
-            bfdt_optimized_kernel<1><<<blocks, threads,shared_mem_bytes>>>(
+            DISPATCH_NDIM_AND_METRIC(1, ndim,
                 fg_coords.data_ptr<int>(), bg_coords.data_ptr<int>(),
                 batch_dist.data_ptr<float>(), batch_indices.data_ptr<int>(),
-                num_fg, num_bg, ndim, sampling_tensor.data_ptr<float>(),
+                num_fg, num_bg, sampling_tensor.data_ptr<float>(),
                 return_distances, return_indices
             );
         } else if (metric_type == 2) {
-            bfdt_optimized_kernel<2><<<blocks, threads,shared_mem_bytes>>>(
+           DISPATCH_NDIM_AND_METRIC(2, ndim,
                 fg_coords.data_ptr<int>(), bg_coords.data_ptr<int>(),
                 batch_dist.data_ptr<float>(), batch_indices.data_ptr<int>(),
-                num_fg, num_bg, ndim, sampling_tensor.data_ptr<float>(),
+                num_fg, num_bg, sampling_tensor.data_ptr<float>(),
                 return_distances, return_indices
             );
         }
