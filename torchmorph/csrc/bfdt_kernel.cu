@@ -45,7 +45,7 @@ __global__ void bfdt_optimized_kernel(
     int best_bg_idx = -1;
 
     // 2. Allocate shared memory to cache a tile of background coordinates
-    __shared__ float shared_bg[BFDT_BLOCK_SIZE][BFDT_MAX_NDIM];
+    extern __shared__ float shared_bg[];
 
     // 3. Shared Memory Tiling: Iterate over background points in blocks
     for (int tile = 0; tile < num_background; tile += BFDT_BLOCK_SIZE) {
@@ -56,7 +56,7 @@ __global__ void bfdt_optimized_kernel(
         if (bg_load_idx < num_background) {
             #pragma unroll
             for (int d = 0; d < ndim; d++) {
-                shared_bg[tid][d] = (float)background_coords[bg_load_idx * ndim + d] * sampling[d];
+                shared_bg[tid * ndim + d] = (float)background_coords[bg_load_idx * ndim + d] * sampling[d];
             }
         }
         
@@ -76,18 +76,18 @@ __global__ void bfdt_optimized_kernel(
                 if (MetricType == 0) { // Euclidean (Compare squared distances, no sqrt here)
                     #pragma unroll
                     for (int d = 0; d < ndim; d++) {
-                        float diff = my_coords_f[d] - shared_bg[i][d];
+                        float diff = my_coords_f[d] - shared_bg[i * ndim + d];
                         dist += diff * diff; // FMA instruction
                     }
                 } else if (MetricType == 1) { // Taxicab (L1)
                     #pragma unroll
                     for (int d = 0; d < ndim; d++) {
-                        dist += fabsf(my_coords_f[d] - shared_bg[i][d]);
+                        dist += fabsf(my_coords_f[d] - shared_bg[i * ndim + d]);
                     }
                 } else if (MetricType == 2) { // Chessboard (L-inf)
                     #pragma unroll
                     for (int d = 0; d < ndim; d++) {
-                        dist = fmaxf(dist, fabsf(my_coords_f[d] - shared_bg[i][d]));
+                        dist = fmaxf(dist, fabsf(my_coords_f[d] - shared_bg[i * ndim + d]));
                     }
                 }
 
@@ -199,25 +199,26 @@ std::tuple<torch::Tensor, torch::Tensor> bfdt_cuda(
 
         int threads = BFDT_BLOCK_SIZE;
         int blocks = (num_fg + threads - 1) / threads;
+        size_t shared_mem_bytes = BFDT_BLOCK_SIZE * ndim * sizeof(float);
 
         // Dispatch to different template instantiations based on metric type 
         // to guarantee zero-overhead branching inside the inner loops.
         if (metric_type == 0) {
-            bfdt_optimized_kernel<0><<<blocks, threads>>>(
+            bfdt_optimized_kernel<0><<<blocks, threads,shared_mem_bytes>>>(
                 fg_coords.data_ptr<int>(), bg_coords.data_ptr<int>(),
                 batch_dist.data_ptr<float>(), batch_indices.data_ptr<int>(),
                 num_fg, num_bg, ndim, sampling_tensor.data_ptr<float>(),
                 return_distances, return_indices
             );
         } else if (metric_type == 1) {
-            bfdt_optimized_kernel<1><<<blocks, threads>>>(
+            bfdt_optimized_kernel<1><<<blocks, threads,shared_mem_bytes>>>(
                 fg_coords.data_ptr<int>(), bg_coords.data_ptr<int>(),
                 batch_dist.data_ptr<float>(), batch_indices.data_ptr<int>(),
                 num_fg, num_bg, ndim, sampling_tensor.data_ptr<float>(),
                 return_distances, return_indices
             );
         } else if (metric_type == 2) {
-            bfdt_optimized_kernel<2><<<blocks, threads>>>(
+            bfdt_optimized_kernel<2><<<blocks, threads,shared_mem_bytes>>>(
                 fg_coords.data_ptr<int>(), bg_coords.data_ptr<int>(),
                 batch_dist.data_ptr<float>(), batch_indices.data_ptr<int>(),
                 num_fg, num_bg, ndim, sampling_tensor.data_ptr<float>(),
