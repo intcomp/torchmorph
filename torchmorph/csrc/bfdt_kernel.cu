@@ -212,10 +212,12 @@ std::tuple<torch::Tensor, torch::Tensor> bfdt_cuda(
         get_coords(fg_indices_flat, fg_coords);
         get_coords(bg_indices_flat, bg_coords);
 
-        auto batch_dist = return_distance ? 
-        torch::empty({num_fg}, input.options()) : torch::Tensor();
+        auto batch_dist = return_distances ?
+        torch::empty({num_fg}, input.options()) : 
+        torch::empty({0},input.options());
         auto batch_indices = return_indices ? torch::empty({ndim, num_fg},
-        input.options().dtype(torch::kInt32)) : torch::Tensor();
+        input.options().dtype(torch::kInt32)) : 
+        torch::empty({0}, input.options().dtype(torch::kInt32));
 
         int threads = BFDT_BLOCK_SIZE;
         int blocks = (num_fg + threads - 1) / threads;
