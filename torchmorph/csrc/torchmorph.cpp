@@ -19,6 +19,14 @@ std::tuple<torch::Tensor, torch::Tensor> cdt_cuda(
     bool return_indices
 );
 
+std::tuple<torch::Tensor, torch::Tensor> bfdt_cuda(
+    torch::Tensor input,
+    const std::string& metric,
+    std::vector<float> sampling,
+    bool return_distances,
+    bool return_indices
+);
+
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("add_cuda", &add_cuda, "Add tensor with scalar");
@@ -35,6 +43,14 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           "Chamfer Distance Transform",
           py::arg("input"),
           py::arg("metric") = "chessboard",
+          py::arg("return_distances") = true,
+          py::arg("return_indices") = false);
+
+    m.def("bfdt_cuda", &bfdt_cuda,
+          "Brute-Force Distance Transform",
+          py::arg("input"),
+          py::arg("metric") = "euclidean",
+          py::arg("sampling") = std::vector<float>(),
           py::arg("return_distances") = true,
           py::arg("return_indices") = false);
 }
