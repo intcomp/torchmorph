@@ -51,7 +51,11 @@ def bench_single_op(op_name):
                 globals={"x_np_list": x_np_list, "scipy_op": scipy_op},
             ).blocked_autorange(min_run_time=MIN_RUN)
             scipy_ms = (t_scipy.median * 1e3) / B
-
+            # Torch CUDA warmup
+            for img in x_imgs:
+                torch_op(img)
+            torch_op(x)
+            torch.cuda.synchronize()
             # Torch CUDA (one-by-one)
             stmt_torch1 = "out = [torch_op(img) for img in x_imgs]"
             t_torch1 = benchmark.Timer(
