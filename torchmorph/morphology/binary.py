@@ -6,38 +6,39 @@ from .structure import generate_binary_structure
 
 
 def _get_conv_func(ndim: int):
-  """return conv function with right ndim"""
-  if(ndim == 1):
-    return F.conv1d
-  if(ndim == 2):
-    return F.conv2d
-  if(ndim == 3):
-    return F.conv3d
-  raise ValueError(f"only support [1,3] dimension, got {ndim}")
-
-def _prepare_origin(origin: int | tuple[int, ...], ndim = int) -> tuple[int, ...]:
-  """change the origin into tuple"""
-  if isinstance(origin,int):
-    return (origin,) * ndim
-  origin = tuple(origin)
-  
-  if (len(origin)) != ndim:
-    raise ValueError(f"origin dimention is not {ndim}, got {len(origin)}")
-  
-  return origin
+    """return conv function with right ndim"""
+    if ndim == 1:
+        return F.conv1d
+    if ndim == 2:
+        return F.conv2d
+    if ndim == 3:
+        return F.conv3d
+    raise ValueError(f"only support [1,3] dimension, got {ndim}")
 
 
+def _prepare_origin(origin: int | tuple[int, ...], ndim=int) -> tuple[int, ...]:
+    """change the origin into tuple"""
+    if isinstance(origin, int):
+        return (origin,) * ndim
+    origin = tuple(origin)
 
-def _extend_pad(kernel_shape:torch.Size, origin: tuple[int, ...]) -> list[int]:
-  """extend the padlist for kernel"""
-  pad = []
-  for dim in range(len(kernel_shape) - 1, -1, -1):
-    center = kernel_shape[dim] // 2
-    pad_before = center + origin[dim]
-    pad_after = kernel_shape[dim] - 1 - pad_before
-    pad.extend([pad_before, pad_after])
-  return pad
-  
+    if (len(origin)) != ndim:
+        raise ValueError(f"origin dimention is not {ndim}, got {len(origin)}")
+
+    return origin
+
+
+def _extend_pad(kernel_shape: torch.Size, origin: tuple[int, ...]) -> list[int]:
+    """extend the padlist for kernel"""
+    pad = []
+    for dim in range(len(kernel_shape) - 1, -1, -1):
+        center = kernel_shape[dim] // 2
+        pad_before = center + origin[dim]
+        pad_after = kernel_shape[dim] - 1 - pad_before
+        pad.extend([pad_before, pad_after])
+    return pad
+
+
 def _binary_morphology(
     input: Tensor,
     structure: Tensor | None,
@@ -72,8 +73,8 @@ def _binary_morphology(
 
     if mask is not None:
         mask_flat = mask.to(dtype=torch.bool).reshape(batch * channels, 1, *spatial_shape)
-        input_flat = (input != 0).to(dtype=torch.float32).reshape(
-            batch * channels, 1, *spatial_shape
+        input_flat = (
+            (input != 0).to(dtype=torch.float32).reshape(batch * channels, 1, *spatial_shape)
         )
     else:
         mask_flat = None
@@ -112,12 +113,34 @@ def binary_erosion(
     For a single image or volume, add batch and channel dimensions first.
     """
     return _binary_morphology(
-        input = input,
-        structure = structure,
-        iterations = iterations,
-        mask = mask,
-        output = output,
-        border_value = border_value,
-        origin = origin,
+        input=input,
+        structure=structure,
+        iterations=iterations,
+        mask=mask,
+        output=output,
+        border_value=border_value,
+        origin=origin,
         mode="erosion",
+    )
+
+
+def binary_dilation(
+    input: Tensor,
+    structure: Tensor | None = None,
+    iterations: int = 1,
+    mask: Tensor | None = None,
+    output: Tensor | None = None,
+    border_value: bool = False,
+    origin: int | tuple[int, ...] = 0,
+) -> Tensor:
+    """binary dilation for `(B, C, Spatial...)` tensors."""
+    return _binary_morphology(
+        input,
+        structure,
+        iterations,
+        mask,
+        output,
+        border_value,
+        origin,
+        mode="dilation",
     )

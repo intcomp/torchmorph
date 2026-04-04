@@ -1,13 +1,10 @@
 from .add import add
-from .morphology import (
-  generate_binary_structure,
-  binary_erosion,
-)
 from .distance_transform import (
     brute_force_distance_transform,
     chamfer_distance_transform,
     euclidean_distance_transform,
 )
+from .morphology import binary_dilation, binary_erosion, generate_binary_structure
 
 __all__ = [
     "add",
@@ -16,4 +13,5 @@ __all__ = [
     "brute_force_distance_transform",
     "generate_binary_structure",
     "binary_erosion",
+    "binary_dilation",
 ]
