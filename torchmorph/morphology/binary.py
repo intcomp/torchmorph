@@ -144,3 +144,34 @@ def binary_dilation(
         origin,
         mode="dilation",
     )
+
+
+def binary_opening(
+    input: Tensor,
+    structure: Tensor | None = None,
+    iterations: int = 1,
+    mask: Tensor | None = None,
+    output: Tensor | None = None,
+    border_value: bool = False,
+    origin: int | tuple[int, ...] = 0,
+) -> Tensor:
+    """binary opening for '(B, C, ...)' Tensors ."""
+    x = binary_erosion(
+        input,
+        structure,
+        iterations,
+        mask,
+        output,
+        border_value,
+        origin,
+    )
+    x = binary_dilation(
+        x,
+        structure,
+        iterations,
+        mask,
+        output,
+        border_value,
+        origin,
+    )
+    return x
