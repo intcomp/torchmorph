@@ -4,7 +4,13 @@ from .distance_transform import (
     chamfer_distance_transform,
     euclidean_distance_transform,
 )
-from .morphology import binary_dilation, binary_erosion, binary_opening, generate_binary_structure
+from .morphology import (
+    binary_closing,
+    binary_dilation,
+    binary_erosion,
+    binary_opening,
+    generate_binary_structure,
+)
 
 __all__ = [
     "add",
@@ -15,4 +21,5 @@ __all__ = [
     "binary_erosion",
     "binary_dilation",
     "binary_opening",
+    "binary_closing",
 ]

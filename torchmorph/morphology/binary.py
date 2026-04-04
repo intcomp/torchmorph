@@ -175,3 +175,34 @@ def binary_opening(
         origin,
     )
     return x
+
+
+def binary_closing(
+    input: Tensor,
+    structure: Tensor | None = None,
+    iterations: int = 1,
+    mask: Tensor | None = None,
+    output: Tensor | None = None,
+    border_value: bool = False,
+    origin: int | tuple[int, ...] = 0,
+) -> Tensor:
+    """binary closing for (B, C, ...) Tensors."""
+    x = binary_dilation(
+        input,
+        structure,
+        iterations,
+        mask,
+        output,
+        border_value,
+        origin,
+    )
+    x = binary_erosion(
+        x,
+        structure,
+        iterations,
+        mask,
+        output,
+        border_value,
+        origin,
+    )
+    return x

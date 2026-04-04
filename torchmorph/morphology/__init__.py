@@ -1,4 +1,4 @@
-from .binary import binary_dilation, binary_erosion, binary_opening
+from .binary import binary_closing, binary_dilation, binary_erosion, binary_opening
 from .structure import generate_binary_structure
 
 __all__ = [
@@ -6,4 +6,5 @@ __all__ = [
     "binary_erosion",
     "binary_dilation",
     "binary_opening",
+    "binary_closing",
 ]
