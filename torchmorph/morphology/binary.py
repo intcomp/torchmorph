@@ -23,7 +23,7 @@ def _prepare_origin(origin: int | tuple[int, ...], ndim=int) -> tuple[int, ...]:
     origin = tuple(origin)
 
     if (len(origin)) != ndim:
-        raise ValueError(f"origin dimention is not {ndim}, got {len(origin)}")
+        raise ValueError(f"origin dimension is not {ndim}, got {len(origin)}")
 
     return origin
 
@@ -50,8 +50,7 @@ def _binary_morphology(
     *,
     mode: str,
 ) -> Tensor:
-    if iterations < 1:
-        raise ValueError(f"iterations must be >= 1, got {iterations}")
+    iterations_flag = iterations = 1
 
     spatial_ndim = input.ndim - 2
 
@@ -80,16 +79,33 @@ def _binary_morphology(
         mask_flat = None
         input_flat = None
 
-    for _ in range(iterations):
-        x_padded = F.pad(x, pad, value=pad_value)
-        conv = conv_fn(x_padded, kernel)
-        if mode == "erosion":
-            x = (conv == kernel_sum).to(dtype=torch.float32)
-        else:
-            x = (conv > 0).to(dtype=torch.float32)
+    if iterations_flag:
+        old = None
+        while True:
+            x_padded = F.pad(x, pad, value=pad_value)
+            conv = conv_fn(x_padded, kernel)
+            if mode == "erosion":
+                x = (conv == kernel_sum).to(dtype=torch.float32)
+            else:
+                x = (conv > 0).to(dtype=torch.float32)
+            if mask_flat is not None:
+                x = torch.where(mask_flat, x, input_flat)
 
-        if mask_flat is not None:
-            x = torch.where(mask_flat, x, input_flat)
+            if old is not None and torch.equal(x, old):
+                break
+
+            old = x.clone()
+    else:
+        for _ in range(iterations):
+            x_padded = F.pad(x, pad, value=pad_value)
+            conv = conv_fn(x_padded, kernel)
+            if mode == "erosion":
+                x = (conv == kernel_sum).to(dtype=torch.float32)
+            else:
+                x = (conv > 0).to(dtype=torch.float32)
+
+            if mask_flat is not None:
+                x = torch.where(mask_flat, x, input_flat)
 
     result = x.reshape(batch, channels, *spatial_shape).to(dtype=torch.bool)
     if output is not None:
