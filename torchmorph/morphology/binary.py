@@ -50,7 +50,7 @@ def _binary_morphology(
     *,
     mode: str,
 ) -> Tensor:
-    iterations_flag = iterations = 1
+    iterations_flag = iterations < 1
 
     spatial_ndim = input.ndim - 2
 
