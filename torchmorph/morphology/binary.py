@@ -1,144 +1,50 @@
 import torch
 import torch.nn.functional as F
 from torch import Tensor
+from torchnd import conv_nd
 
 from .structure import generate_binary_structure
 
 
-def _prepare_origin(origin: int | tuple[int, ...], ndim: int) -> tuple[int, ...]:
-    """Normalize origin to an ndim-length tuple."""
-    if isinstance(origin, bool):
-        raise TypeError("origin must be an int or tuple of ints")
+def _get_conv_func(ndim: int):
+    if ndim < 1:
+        raise ValueError(f"expected ndim >= 1, got {ndim}")
+    if ndim == 1:
+        return F.conv1d
+    if ndim == 2:
+        return F.conv2d
+    if ndim == 3:
+        return F.conv3d
+    else:
+        dim_tuple = tuple(range(-ndim, 0))
+
+        def conv_nd_wrapper(input: Tensor, weight: Tensor) -> Tensor:
+            return conv_nd(input, weight, dim=dim_tuple)
+
+        return conv_nd_wrapper
+
+
+def _prepare_origin(origin: int | tuple[int, ...], ndim=int) -> tuple[int, ...]:
+    """change the origin into tuple"""
     if isinstance(origin, int):
         return (origin,) * ndim
-
     origin = tuple(origin)
-    if len(origin) != ndim:
+
+    if (len(origin)) != ndim:
         raise ValueError(f"origin dimension is not {ndim}, got {len(origin)}")
-    if any(isinstance(v, bool) or not isinstance(v, int) for v in origin):
-        raise TypeError("origin must be an int or tuple of ints")
+
     return origin
 
 
-def _prepare_structure(
-    structure: Tensor | None,
-    spatial_ndim: int,
-    device: torch.device,
-) -> Tensor:
-    if structure is None:
-        structure = generate_binary_structure(spatial_ndim, 1)
-
-    structure_bool = (structure != 0).to(device=device, dtype=torch.bool)
-    if structure_bool.ndim != spatial_ndim:
-        raise ValueError(
-            f"structure.ndim must equal spatial_ndim, got {structure_bool.ndim} and {spatial_ndim}"
-        )
-    if not torch.any(structure_bool):
-        raise ValueError("structure must contain at least one active element")
-    return structure_bool
-
-
-def _normalize_for_operation(
-    structure: Tensor,
-    origin: tuple[int, ...],
-    *,
-    mode: str,
-) -> tuple[Tensor, tuple[int, ...]]:
-    if mode == "erosion":
-        return structure, origin
-
-    dims = tuple(range(structure.ndim))
-    structure = torch.flip(structure, dims=dims)
-    dilation_origin = []
-    for dim, value in enumerate(origin):
-        adjusted = -value
-        if structure.shape[dim] % 2 == 0:
-            adjusted -= 1
-        dilation_origin.append(adjusted)
-    return structure, tuple(dilation_origin)
-
-
-def _compute_anchor(
-    structure_shape: torch.Size,
-    origin: tuple[int, ...],
-) -> tuple[int, ...]:
-    anchor = tuple(structure_shape[d] // 2 + origin[d] for d in range(len(structure_shape)))
-    for dim, value in enumerate(anchor):
-        if not 0 <= value < structure_shape[dim]:
-            raise ValueError(f"bounds for dim {dim}: {value}must in[0, {structure_shape[dim]})")
-    return anchor
-
-
-def _structure_to_offsets(
-    structure: Tensor,
-    anchor: tuple[int, ...],
-) -> list[tuple[int, ...]]:
-    active_coords = torch.nonzero(structure, as_tuple=False)
-    return [
-        tuple(int(coord[d]) - anchor[d] for d in range(structure.ndim)) for coord in active_coords
-    ]
-
-
-def _offsets_to_padding(
-    offsets: list[tuple[int, ...]],
-) -> tuple[list[int], list[int], list[int]]:
-    mins = [min(offset[d] for offset in offsets) for d in range(len(offsets[0]))]
-    maxs = [max(offset[d] for offset in offsets) for d in range(len(offsets[0]))]
-
-    pad_before = [max(0, -value) for value in mins]
-    pad_after = [max(0, value) for value in maxs]
-
+def _extend_pad(kernel_shape: torch.Size, origin: tuple[int, ...]) -> list[int]:
+    """extend the padlist for kernel"""
     pad = []
-    for dim in range(len(offsets[0]) - 1, -1, -1):
-        pad.extend([pad_before[dim], pad_after[dim]])
-    return pad_before, pad_after, pad
-
-
-def _gather_neighbors(
-    x_padded: Tensor,
-    spatial_shape: tuple[int, ...],
-    pad_before: list[int],
-    offsets: list[tuple[int, ...]],
-) -> list[Tensor]:
-    neighbors = []
-    spatial_ndim = len(spatial_shape)
-    for offset in offsets:
-        slices = [slice(None), slice(None)]
-        for dim in range(spatial_ndim):
-            start = pad_before[dim] + offset[dim]
-            end = start + spatial_shape[dim]
-            slices.append(slice(start, end))
-        neighbors.append(x_padded[tuple(slices)])
-    return neighbors
-
-
-def _binary_morphology_step(
-    x: Tensor,
-    structure: Tensor,
-    origin: tuple[int, ...],
-    border_value: bool,
-    *,
-    mode: str,
-) -> Tensor:
-    structure, origin = _normalize_for_operation(structure, origin, mode=mode)
-    anchor = _compute_anchor(structure.shape, origin)
-    offsets = _structure_to_offsets(structure, anchor)
-    pad_before, _, pad = _offsets_to_padding(offsets)
-
-    spatial_shape = tuple(x.shape[2:])
-    x_padded = F.pad(x.to(dtype=torch.float32), pad, value=float(bool(border_value))).to(
-        dtype=torch.bool
-    )
-    neighbors = _gather_neighbors(x_padded, spatial_shape, pad_before, offsets)
-
-    result = neighbors[0].clone()
-    if mode == "erosion":
-        for neighbor in neighbors[1:]:
-            result &= neighbor
-    else:
-        for neighbor in neighbors[1:]:
-            result |= neighbor
-    return result
+    for dim in range(len(kernel_shape) - 1, -1, -1):
+        center = kernel_shape[dim] // 2
+        pad_before = center + origin[dim]
+        pad_after = kernel_shape[dim] - 1 - pad_before
+        pad.extend([pad_before, pad_after])
+    return pad
 
 
 def _binary_morphology(
@@ -152,51 +58,64 @@ def _binary_morphology(
     *,
     mode: str,
 ) -> Tensor:
-    if input.ndim < 3:
-        raise ValueError(f"input.ndim must be >= 3, got {input.ndim}")
-    if isinstance(iterations, bool) or not isinstance(iterations, int):
-        raise TypeError("iterations must be an integer")
+    iterations_flag = iterations < 1
 
     spatial_ndim = input.ndim - 2
-    origin_tuple = _prepare_origin(origin, spatial_ndim)
-    structure_bool = _prepare_structure(structure, spatial_ndim, input.device)
-    x = (input != 0).to(dtype=torch.bool)
+
+    if structure is None:
+        structure = generate_binary_structure(spatial_ndim, 1)
+
+    batch, channels = input.shape[:2]
+    spatial_shape = input.shape[2:]
+
+    x = (input != 0).to(dtype=torch.float32).reshape(batch * channels, 1, *spatial_shape)
+    structure = (structure != 0).to(device=input.device, dtype=torch.float32)
+    kernel = structure.unsqueeze(0).unsqueeze(0)
+    kernel_sum = kernel.sum()
+
+    origin = _prepare_origin(origin, spatial_ndim)
+    pad = _extend_pad(structure.shape, origin)
+    conv_fn = _get_conv_func(spatial_ndim)
+    pad_value = float(bool(border_value))
 
     if mask is not None:
-        if mask.shape != input.shape:
-            raise ValueError("mask.shape must equal input.shape")
-        mask_bool = (mask != 0).to(device=input.device, dtype=torch.bool)
+        mask_flat = mask.to(dtype=torch.bool).reshape(batch * channels, 1, *spatial_shape)
+        input_flat = (
+            (input != 0).to(dtype=torch.float32).reshape(batch * channels, 1, *spatial_shape)
+        )
     else:
-        mask_bool = None
+        mask_flat = None
+        input_flat = None
 
-    if iterations < 1:
+    if iterations_flag:
+        old = None
         while True:
-            candidate = _binary_morphology_step(
-                x,
-                structure_bool,
-                origin_tuple,
-                border_value,
-                mode=mode,
-            )
-            if mask_bool is not None:
-                candidate = torch.where(mask_bool, candidate, x)
-            if torch.equal(candidate, x):
+            x_padded = F.pad(x, pad, value=pad_value)
+            conv = conv_fn(x_padded, kernel)
+            if mode == "erosion":
+                x = (conv == kernel_sum).to(dtype=torch.float32)
+            else:
+                x = (conv > 0).to(dtype=torch.float32)
+            if mask_flat is not None:
+                x = torch.where(mask_flat, x, input_flat)
+
+            if old is not None and torch.equal(x, old):
                 break
-            x = candidate
+
+            old = x.clone()
     else:
         for _ in range(iterations):
-            candidate = _binary_morphology_step(
-                x,
-                structure_bool,
-                origin_tuple,
-                border_value,
-                mode=mode,
-            )
-            if mask_bool is not None:
-                candidate = torch.where(mask_bool, candidate, x)
-            x = candidate
+            x_padded = F.pad(x, pad, value=pad_value)
+            conv = conv_fn(x_padded, kernel)
+            if mode == "erosion":
+                x = (conv == kernel_sum).to(dtype=torch.float32)
+            else:
+                x = (conv > 0).to(dtype=torch.float32)
 
-    result = x.to(dtype=torch.bool)
+            if mask_flat is not None:
+                x = torch.where(mask_flat, x, input_flat)
+
+    result = x.reshape(batch, channels, *spatial_shape).to(dtype=torch.bool)
     if output is not None:
         output.copy_(result)
         return output
