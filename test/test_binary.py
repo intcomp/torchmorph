@@ -77,8 +77,10 @@ case_2d = np.array(
 case_structure_2d = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]])
 
 case_3d = np.arange(24).reshape(2, 1, 2, 3, 2)
+case_4d = np.arange(48).reshape(2, 1, 2, 2, 3, 2)
 case_structure_3d_1 = generate_binary_structure(rank=3, connectivity=2)
 case_structure_3d_2 = generate_binary_structure(rank=3, connectivity=3)
+case_structure_4d = generate_binary_structure(rank=4, connectivity=4)
 
 
 @pytest.mark.parametrize(
@@ -90,13 +92,20 @@ case_structure_3d_2 = generate_binary_structure(rank=3, connectivity=3)
         pytest.param(case_2d, None, -1, 0, False, id="2D_-1iterations"),
         pytest.param(case_2d, None, 1, 1, False, id="2D_1origin"),
         pytest.param(case_2d, None, 1, 1, True, id="2D_1origin"),
-        pytest.param(case_3d, None, 1, 0, False, id="4D_basic"),
+        pytest.param(case_3d, None, 1, 0, False, id="3D_basic"),
         pytest.param(case_3d, case_structure_3d_1, 1, 0, False, id="3D_2Dstructure"),
         pytest.param(case_3d, case_structure_3d_2, 1, 0, False, id="3D_3Dstructure"),
         pytest.param(case_3d, None, 2, 0, False, id="3D_1iterations"),
         pytest.param(case_3d, None, -1, 0, False, id="3D_-1iterations"),
         pytest.param(case_3d, None, 1, 1, False, id="3D_1origin"),
         pytest.param(case_3d, None, 1, 1, True, id="3D_1origin"),
+        pytest.param(case_4d, None, 1, 0, False, id="4D_basic"),
+        pytest.param(case_4d, case_structure_4d, 1, 0, False, id="4D_4Dstructure"),
+        pytest.param(case_4d, case_structure_4d, 1, 0, False, id="4D_4Dstructure"),
+        pytest.param(case_4d, None, 2, 0, False, id="4D_1iterations"),
+        pytest.param(case_4d, None, -1, 0, False, id="4D_-1iterations"),
+        pytest.param(case_4d, None, 1, 1, False, id="4D_1origin"),
+        pytest.param(case_4d, None, 1, 1, True, id="4D_1origin"),
     ],
 )
 def test_binary_erosion_basic(
