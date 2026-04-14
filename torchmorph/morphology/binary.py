@@ -1,27 +1,9 @@
 import torch
 import torch.nn.functional as F
 from torch import Tensor
-from torchnd import conv_nd
 
+from ._convnd import conv_nd
 from .structure import generate_binary_structure
-
-
-def _get_conv_func(ndim: int):
-    if ndim < 1:
-        raise ValueError(f"expected ndim >= 1, got {ndim}")
-    if ndim == 1:
-        return F.conv1d
-    if ndim == 2:
-        return F.conv2d
-    if ndim == 3:
-        return F.conv3d
-    else:
-        dim_tuple = tuple(range(-ndim, 0))
-
-        def conv_nd_wrapper(input: Tensor, weight: Tensor) -> Tensor:
-            return conv_nd(input, weight, dim=dim_tuple)
-
-        return conv_nd_wrapper
 
 
 def _prepare_origin(origin: int | tuple[int, ...], ndim=int) -> tuple[int, ...]:
@@ -75,7 +57,6 @@ def _binary_morphology(
 
     origin = _prepare_origin(origin, spatial_ndim)
     pad = _extend_pad(structure.shape, origin)
-    conv_fn = _get_conv_func(spatial_ndim)
     pad_value = float(bool(border_value))
 
     if mask is not None:
@@ -91,7 +72,7 @@ def _binary_morphology(
         old = None
         while True:
             x_padded = F.pad(x, pad, value=pad_value)
-            conv = conv_fn(x_padded, kernel)
+            conv = conv_nd(x_padded, kernel)
             if mode == "erosion":
                 x = (conv == kernel_sum).to(dtype=torch.float32)
             else:
@@ -106,7 +87,7 @@ def _binary_morphology(
     else:
         for _ in range(iterations):
             x_padded = F.pad(x, pad, value=pad_value)
-            conv = conv_fn(x_padded, kernel)
+            conv = conv_nd(x_padded, kernel)
             if mode == "erosion":
                 x = (conv == kernel_sum).to(dtype=torch.float32)
             else:

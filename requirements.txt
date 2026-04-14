@@ -1,4 +1,3 @@
 # Core runtime dependencies
 torch>=2.0
-torchnd>=0.1.0
 numpy>=1.22
