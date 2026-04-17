@@ -81,186 +81,98 @@ case_2d = np.array(
     ],
     dtype=np.float32,
 )
-case_structure_2d = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]])
+structure_2d = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]])
 
 case_3d = np.arange(24).reshape(2, 1, 2, 3, 2)
 case_4d = np.arange(48).reshape(2, 1, 2, 2, 3, 2)
-case_structure_3d_1 = generate_binary_structure(rank=3, connectivity=2)
-case_structure_3d_2 = generate_binary_structure(rank=3, connectivity=3)
-case_structure_4d = generate_binary_structure(rank=4, connectivity=4)
+structure_3d_1 = generate_binary_structure(rank=3, connectivity=2)
+structure_3d_2 = generate_binary_structure(rank=3, connectivity=3)
+structure_4d = generate_binary_structure(rank=4, connectivity=4)
 
 
 @pytest.mark.parametrize(
     ("np_input, scipy_func, structure, iterations, origin, border_value"),
     [
-        pytest.param(case_2d, binary_erosion, None, 1, 0, False, id="erosion_2D_basic"),
+        pytest.param(case_2d, binary_erosion, None, 1, 0, False, id="er_2D_basic"),
+        pytest.param(case_2d, binary_erosion, structure_2d, 1, 0, False, id="er_2D_structure"),
+        pytest.param(case_2d, binary_erosion, None, 2, 0, False, id="er_2D_2iterations"),
+        pytest.param(case_2d, binary_erosion, None, -1, 0, False, id="er_2D_-1iterations"),
+        pytest.param(case_2d, binary_erosion, None, 1, 1, False, id="er_2D_1origin_False"),
+        pytest.param(case_2d, binary_erosion, None, 1, 1, True, id="er_2D_1origin_True"),
+        pytest.param(case_3d, binary_erosion, None, 1, 0, False, id="er_3D_basic"),
+        pytest.param(case_3d, binary_erosion, structure_3d_1, 1, 0, False, id="er_3D_2Dstructure1"),
+        pytest.param(case_3d, binary_erosion, structure_3d_2, 1, 0, False, id="er_3D_3Dstructure2"),
+        pytest.param(case_3d, binary_erosion, None, 2, 0, False, id="er_3D_2iterations"),
+        pytest.param(case_3d, binary_erosion, None, -1, 0, False, id="er_3D_-1iterations"),
+        pytest.param(case_3d, binary_erosion, None, 1, 1, False, id="er_3D_1origin_False"),
+        pytest.param(case_3d, binary_erosion, None, 1, 1, True, id="er_3D_1origin_True"),
+        pytest.param(case_4d, binary_erosion, None, 1, 0, False, id="er_4D_basic"),
+        pytest.param(case_4d, binary_erosion, structure_4d, 1, 0, False, id="er_4D_4Dstructure"),
+        pytest.param(case_4d, binary_erosion, None, 2, 0, False, id="er_4D_2iterations"),
+        pytest.param(case_4d, binary_erosion, None, -1, 0, False, id="er_4D_-1iterations"),
+        pytest.param(case_4d, binary_erosion, None, 1, 1, False, id="er_4D_1origin_False"),
+        pytest.param(case_4d, binary_erosion, None, 1, 1, True, id="er_4D_1origin_True"),
+        pytest.param(case_2d, binary_dilation, None, 1, 0, False, id="di_2D_basic"),
+        pytest.param(case_2d, binary_dilation, structure_2d, 1, 0, False, id="di_2D_structure"),
+        pytest.param(case_2d, binary_dilation, None, 2, 0, False, id="di_2D_2iterations"),
+        pytest.param(case_2d, binary_dilation, None, -1, 0, False, id="di_2D_-1iterations"),
+        pytest.param(case_2d, binary_dilation, None, 1, 1, False, id="di_2D_1origin_False"),
+        pytest.param(case_2d, binary_dilation, None, 1, 1, True, id="di_2D_1origin_True"),
+        pytest.param(case_3d, binary_dilation, None, 1, 0, False, id="di_3D_basic"),
         pytest.param(
-            case_2d, binary_erosion, case_structure_2d, 1, 0, False, id="erosion_2D_structure"
-        ),
-        pytest.param(case_2d, binary_erosion, None, 2, 0, False, id="erosion_2D_2iterations"),
-        pytest.param(case_2d, binary_erosion, None, -1, 0, False, id="erosion_2D_-1iterations"),
-        pytest.param(
-            case_2d, binary_erosion, None, 1, 1, False, id="erosion_2D_1origin_border_value=False"
-        ),
-        pytest.param(
-            case_2d, binary_erosion, None, 1, 1, True, id="erosion_2D_1origin_border_value=True"
-        ),
-        pytest.param(case_3d, binary_erosion, None, 1, 0, False, id="erosion_3D_basic"),
-        pytest.param(
-            case_3d, binary_erosion, case_structure_3d_1, 1, 0, False, id="erosion_3D_2Dstructure1"
-        ),
-        pytest.param(
-            case_3d, binary_erosion, case_structure_3d_2, 1, 0, False, id="erosion_3D_3Dstructure2"
-        ),
-        pytest.param(case_3d, binary_erosion, None, 2, 0, False, id="erosion_3D_2iterations"),
-        pytest.param(case_3d, binary_erosion, None, -1, 0, False, id="erosion_3D_-1iterations"),
-        pytest.param(
-            case_3d, binary_erosion, None, 1, 1, False, id="erosion_3D_1origin_border_value=False"
-        ),
-        pytest.param(
-            case_3d, binary_erosion, None, 1, 1, True, id="erosion_3D_1origin_border_value=True"
-        ),
-        pytest.param(case_4d, binary_erosion, None, 1, 0, False, id="erosion_4D_basic"),
-        pytest.param(
-            case_4d, binary_erosion, case_structure_4d, 1, 0, False, id="erosion_4D_4Dstructure"
-        ),
-        pytest.param(case_4d, binary_erosion, None, 2, 0, False, id="erosion_4D_2iterations"),
-        pytest.param(case_4d, binary_erosion, None, -1, 0, False, id="erosion_4D_-1iterations"),
-        pytest.param(
-            case_4d, binary_erosion, None, 1, 1, False, id="erosion_4D_1origin_border_value=False"
+            case_3d, binary_dilation, structure_3d_1, 1, 0, False, id="di_3D_2Dstructure1"
         ),
         pytest.param(
-            case_4d, binary_erosion, None, 1, 1, True, id="erosion_4D_1origin_border_value=True"
+            case_3d, binary_dilation, structure_3d_2, 1, 0, False, id="di_3D_3Dstructure2"
         ),
-        pytest.param(case_2d, binary_dilation, None, 1, 0, False, id="dilation_2D_basic"),
-        pytest.param(
-            case_2d, binary_dilation, case_structure_2d, 1, 0, False, id="dilation_2D_structure"
-        ),
-        pytest.param(case_2d, binary_dilation, None, 2, 0, False, id="dilation_2D_2iterations"),
-        pytest.param(case_2d, binary_dilation, None, -1, 0, False, id="dilation_2D_-1iterations"),
-        pytest.param(
-            case_2d, binary_dilation, None, 1, 1, False, id="dilation_2D_1origin_border_value=False"
-        ),
-        pytest.param(
-            case_2d, binary_dilation, None, 1, 1, True, id="dilation_2D_1origin_border_value=True"
-        ),
-        pytest.param(case_3d, binary_dilation, None, 1, 0, False, id="dilation_3D_basic"),
-        pytest.param(
-            case_3d,
-            binary_dilation,
-            case_structure_3d_1,
-            1,
-            0,
-            False,
-            id="dilation_3D_2Dstructure1",
-        ),
-        pytest.param(
-            case_3d,
-            binary_dilation,
-            case_structure_3d_2,
-            1,
-            0,
-            False,
-            id="dilation_3D_3Dstructure2",
-        ),
-        pytest.param(case_3d, binary_dilation, None, 2, 0, False, id="dilation_3D_2iterations"),
-        pytest.param(case_3d, binary_dilation, None, -1, 0, False, id="dilation_3D_-1iterations"),
-        pytest.param(
-            case_3d, binary_dilation, None, 1, 1, False, id="dilation_3D_1origin_border_value=False"
-        ),
-        pytest.param(
-            case_3d, binary_dilation, None, 1, 1, True, id="dilation_3D_1origin_border_value=True"
-        ),
-        pytest.param(case_4d, binary_dilation, None, 1, 0, False, id="dilation_4D_basic"),
-        pytest.param(
-            case_4d, binary_dilation, case_structure_4d, 1, 0, False, id="dilation_4D_4Dstructure"
-        ),
-        pytest.param(case_4d, binary_dilation, None, 2, 0, False, id="dilation_4D_2iterations"),
-        pytest.param(case_4d, binary_dilation, None, -1, 0, False, id="dilation_4D_-1iterations"),
-        pytest.param(
-            case_4d, binary_dilation, None, 1, 1, False, id="dilation_4D_1origin_border_value=False"
-        ),
-        pytest.param(
-            case_4d, binary_dilation, None, 1, 1, True, id="dilation_4D_1origin_border_value=True"
-        ),
-        pytest.param(case_2d, binary_opening, None, 1, 0, False, id="opening_2D_basic"),
-        pytest.param(
-            case_2d, binary_opening, case_structure_2d, 1, 0, False, id="opening_2D_structure"
-        ),
-        pytest.param(case_2d, binary_opening, None, 2, 0, False, id="opening_2D_2iterations"),
-        pytest.param(case_2d, binary_opening, None, -1, 0, False, id="opening_2D_-1iterations"),
-        pytest.param(
-            case_2d, binary_opening, None, 1, 1, False, id="opening_2D_1origin_border_value=False"
-        ),
-        pytest.param(
-            case_2d, binary_opening, None, 1, 1, True, id="opening_2D_1origin_border_value=True"
-        ),
-        pytest.param(case_3d, binary_opening, None, 1, 0, False, id="opening_3D_basic"),
-        pytest.param(
-            case_3d, binary_opening, case_structure_3d_1, 1, 0, False, id="opening_3D_2Dstructure1"
-        ),
-        pytest.param(
-            case_3d, binary_opening, case_structure_3d_2, 1, 0, False, id="opening_3D_3Dstructure2"
-        ),
-        pytest.param(case_3d, binary_opening, None, 2, 0, False, id="opening_3D_2iterations"),
-        pytest.param(case_3d, binary_opening, None, -1, 0, False, id="opening_3D_-1iterations"),
-        pytest.param(
-            case_3d, binary_opening, None, 1, 1, False, id="opening_3D_1origin_border_value=False"
-        ),
-        pytest.param(
-            case_3d, binary_opening, None, 1, 1, True, id="opening_3D_1origin_border_value=True"
-        ),
-        pytest.param(case_4d, binary_opening, None, 1, 0, False, id="opening_4D_basic"),
-        pytest.param(
-            case_4d, binary_opening, case_structure_4d, 1, 0, False, id="opening_4D_4Dstructure"
-        ),
-        pytest.param(case_4d, binary_opening, None, 2, 0, False, id="opening_4D_2iterations"),
-        pytest.param(case_4d, binary_opening, None, -1, 0, False, id="opening_4D_-1iterations"),
-        pytest.param(
-            case_4d, binary_opening, None, 1, 1, False, id="opening_4D_1origin_border_value=False"
-        ),
-        pytest.param(
-            case_4d, binary_opening, None, 1, 1, True, id="opening_4D_1origin_border_value=True"
-        ),
-        pytest.param(case_2d, binary_closing, None, 1, 0, False, id="opening_2D_basic"),
-        pytest.param(
-            case_2d, binary_closing, case_structure_2d, 1, 0, False, id="opening_2D_structure"
-        ),
-        pytest.param(case_2d, binary_closing, None, 2, 0, False, id="opening_2D_2iterations"),
-        pytest.param(case_2d, binary_closing, None, -1, 0, False, id="opening_2D_-1iterations"),
-        pytest.param(
-            case_2d, binary_closing, None, 1, 1, False, id="opening_2D_1origin_border_value=False"
-        ),
-        pytest.param(
-            case_2d, binary_closing, None, 1, 1, True, id="opening_2D_1origin_border_value=True"
-        ),
-        pytest.param(case_3d, binary_closing, None, 1, 0, False, id="opening_3D_basic"),
-        pytest.param(
-            case_3d, binary_closing, case_structure_3d_1, 1, 0, False, id="opening_3D_2Dstructure1"
-        ),
-        pytest.param(
-            case_3d, binary_closing, case_structure_3d_2, 1, 0, False, id="opening_3D_3Dstructure2"
-        ),
-        pytest.param(case_3d, binary_closing, None, 2, 0, False, id="opening_3D_2iterations"),
-        pytest.param(case_3d, binary_closing, None, -1, 0, False, id="opening_3D_-1iterations"),
-        pytest.param(
-            case_3d, binary_closing, None, 1, 1, False, id="opening_3D_1origin_border_value=False"
-        ),
-        pytest.param(
-            case_3d, binary_closing, None, 1, 1, True, id="opening_3D_1origin_border_value=True"
-        ),
-        pytest.param(case_4d, binary_closing, None, 1, 0, False, id="opening_4D_basic"),
-        pytest.param(
-            case_4d, binary_closing, case_structure_4d, 1, 0, False, id="opening_4D_4Dstructure"
-        ),
-        pytest.param(case_4d, binary_closing, None, 2, 0, False, id="opening_4D_2iterations"),
-        pytest.param(case_4d, binary_closing, None, -1, 0, False, id="opening_4D_-1iterations"),
-        pytest.param(
-            case_4d, binary_closing, None, 1, 1, False, id="opening_4D_1origin_border_value=False"
-        ),
-        pytest.param(
-            case_4d, binary_closing, None, 1, 1, True, id="opening_4D_1origin_border_value=True"
-        ),
+        pytest.param(case_3d, binary_dilation, None, 2, 0, False, id="di_3D_2iterations"),
+        pytest.param(case_3d, binary_dilation, None, -1, 0, False, id="di_3D_-1iterations"),
+        pytest.param(case_3d, binary_dilation, None, 1, 1, False, id="di_3D_1origin_False"),
+        pytest.param(case_3d, binary_dilation, None, 1, 1, True, id="di_3D_1origin_True"),
+        pytest.param(case_4d, binary_dilation, None, 1, 0, False, id="di_4D_basic"),
+        pytest.param(case_4d, binary_dilation, structure_4d, 1, 0, False, id="di_4D_4Dstructure"),
+        pytest.param(case_4d, binary_dilation, None, 2, 0, False, id="di_4D_2iterations"),
+        pytest.param(case_4d, binary_dilation, None, -1, 0, False, id="di_4D_-1iterations"),
+        pytest.param(case_4d, binary_dilation, None, 1, 1, False, id="di_4D_1origin_False"),
+        pytest.param(case_4d, binary_dilation, None, 1, 1, True, id="di_4D_1origin_True"),
+        pytest.param(case_2d, binary_opening, None, 1, 0, False, id="op_2D_basic"),
+        pytest.param(case_2d, binary_opening, structure_2d, 1, 0, False, id="op_2D_structure"),
+        pytest.param(case_2d, binary_opening, None, 2, 0, False, id="op_2D_2iterations"),
+        pytest.param(case_2d, binary_opening, None, -1, 0, False, id="op_2D_-1iterations"),
+        pytest.param(case_2d, binary_opening, None, 1, 1, False, id="op_2D_1origin_False"),
+        pytest.param(case_2d, binary_opening, None, 1, 1, True, id="op_2D_1origin_True"),
+        pytest.param(case_3d, binary_opening, None, 1, 0, False, id="op_3D_basic"),
+        pytest.param(case_3d, binary_opening, structure_3d_1, 1, 0, False, id="op_3D_2Dstructure1"),
+        pytest.param(case_3d, binary_opening, structure_3d_2, 1, 0, False, id="op_3D_3Dstructure2"),
+        pytest.param(case_3d, binary_opening, None, 2, 0, False, id="op_3D_2iterations"),
+        pytest.param(case_3d, binary_opening, None, -1, 0, False, id="op_3D_-1iterations"),
+        pytest.param(case_3d, binary_opening, None, 1, 1, False, id="op_3D_1origin_False"),
+        pytest.param(case_3d, binary_opening, None, 1, 1, True, id="op_3D_1origin_True"),
+        pytest.param(case_4d, binary_opening, None, 1, 0, False, id="op_4D_basic"),
+        pytest.param(case_4d, binary_opening, structure_4d, 1, 0, False, id="op_4D_4Dstructure"),
+        pytest.param(case_4d, binary_opening, None, 2, 0, False, id="op_4D_2iterations"),
+        pytest.param(case_4d, binary_opening, None, -1, 0, False, id="op_4D_-1iterations"),
+        pytest.param(case_4d, binary_opening, None, 1, 1, False, id="op_4D_1origin_False"),
+        pytest.param(case_4d, binary_opening, None, 1, 1, True, id="op_4D_1origin_True"),
+        pytest.param(case_2d, binary_closing, None, 1, 0, False, id="cl_2D_basic"),
+        pytest.param(case_2d, binary_closing, structure_2d, 1, 0, False, id="cl_2D_structure"),
+        pytest.param(case_2d, binary_closing, None, 2, 0, False, id="cl_2D_2iterations"),
+        pytest.param(case_2d, binary_closing, None, -1, 0, False, id="cl_2D_-1iterations"),
+        pytest.param(case_2d, binary_closing, None, 1, 1, False, id="cl_2D_1origin_False"),
+        pytest.param(case_2d, binary_closing, None, 1, 1, True, id="cl_2D_1origin_True"),
+        pytest.param(case_3d, binary_closing, None, 1, 0, False, id="cl_3D_basic"),
+        pytest.param(case_3d, binary_closing, structure_3d_1, 1, 0, False, id="cl_3D_2Dstructure1"),
+        pytest.param(case_3d, binary_closing, structure_3d_2, 1, 0, False, id="cl_3D_3Dstructure2"),
+        pytest.param(case_3d, binary_closing, None, 2, 0, False, id="cl_3D_2iterations"),
+        pytest.param(case_3d, binary_closing, None, -1, 0, False, id="cl_3D_-1iterations"),
+        pytest.param(case_3d, binary_closing, None, 1, 1, False, id="cl_3D_1origin_False"),
+        pytest.param(case_3d, binary_closing, None, 1, 1, True, id="cl_3D_1origin_True"),
+        pytest.param(case_4d, binary_closing, None, 1, 0, False, id="cl_4D_basic"),
+        pytest.param(case_4d, binary_closing, structure_4d, 1, 0, False, id="cl_4D_4Dstructure"),
+        pytest.param(case_4d, binary_closing, None, 2, 0, False, id="cl_4D_2iterations"),
+        pytest.param(case_4d, binary_closing, None, -1, 0, False, id="cl_4D_-1iterations"),
+        pytest.param(case_4d, binary_closing, None, 1, 1, False, id="cl_4D_1origin_False"),
+        pytest.param(case_4d, binary_closing, None, 1, 1, True, id="cl_4D_1origin_True"),
     ],
 )
 def test_binary_basic(
