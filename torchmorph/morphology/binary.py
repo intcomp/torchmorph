@@ -29,6 +29,11 @@ def _extend_pad(kernel_shape: torch.Size, origin: tuple[int, ...]) -> list[int]:
     return pad
 
 
+def _flip_structure(structure: Tensor) -> Tensor:
+    dim = tuple(range(structure.ndim))
+    return torch.flip(structure, dim)
+
+
 def _binary_morphology(
     input: Tensor,
     structure: Tensor | None,
@@ -52,10 +57,14 @@ def _binary_morphology(
 
     x = (input != 0).to(dtype=torch.float32).reshape(batch * channels, 1, *spatial_shape)
     structure = (structure != 0).to(device=input.device, dtype=torch.float32)
+    if mode == "dilation":
+        structure = _flip_structure(structure)
     kernel = structure.unsqueeze(0).unsqueeze(0)
     kernel_sum = kernel.sum()
 
     origin = _prepare_origin(origin, spatial_ndim)
+    if mode == "dilation":
+        origin = tuple(-value for value in origin)
     pad = _extend_pad(structure.shape, origin)
     pad_value = float(bool(border_value))
 
