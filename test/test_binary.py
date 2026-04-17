@@ -31,20 +31,29 @@ def apply_scipy_to_batch(np_input, scipy_func, **kwargs):
         np.ndarray: Output array with the same shape as `np_input`.
     """
     input_shape = np_input.shape
-    batch_shape = input_shape[0:2]
+    batch_shape = input_shape[:2]
     spatial_shape = input_shape[2:]
-
     batch_size = int(np.prod(batch_shape))
     flatten_input = np_input.reshape(batch_size, *spatial_shape)
 
+    mask = kwargs.pop("mask", None)
+    output = kwargs.pop("output", None)
+    if mask is not None and mask.shape != spatial_shape:
+        raise ValueError(f"mask shape must be {spatial_shape}, got {mask.shape}")
+    if output is not None and output.shape != spatial_shape:
+        raise ValueError(f"output shape must be {spatial_shape}, got {output.shape}")
+
     results = []
-
     for sample in flatten_input:
-        result = scipy_func(sample, **kwargs)
-        results.append(result)
-
-    output = np.stack(results, axis=0).reshape(*batch_shape, *spatial_shape)
-    return output
+        sample_kwargs = dict(kwargs)
+        if mask is not None:
+            sample_kwargs["mask"] = mask
+        if output is not None:
+            sample_output = np.empty_like(output)
+            sample_kwargs["output"] = sample_output
+        result = scipy_func(sample, **sample_kwargs)
+        results.append(np.asarray(result).copy())
+    return np.stack(results, axis=0).reshape(*batch_shape, *spatial_shape)
 
 
 def batch_scipy(
@@ -69,6 +78,7 @@ def batch_scipy(
     )
 
 
+# case
 case_2d = np.array(
     [
         [
@@ -81,13 +91,42 @@ case_2d = np.array(
     ],
     dtype=np.float32,
 )
+case_3d = np.zeros((2, 1, 5, 5, 5), dtype=bool)
+case_3d[0, 0, 2:3, 2:4, 1:2] = True
+case_4d = np.zeros((2, 1, 4, 4, 4, 4), dtype=bool)
+case_4d[0, 0, 1:3, 1:2, 2:3] = True
+
+# structure
 structure_2d = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]])
 
-case_3d = np.arange(24).reshape(2, 1, 2, 3, 2)
-case_4d = np.arange(48).reshape(2, 1, 2, 2, 3, 2)
 structure_3d_1 = generate_binary_structure(rank=3, connectivity=2)
 structure_3d_2 = generate_binary_structure(rank=3, connectivity=3)
+
 structure_4d = generate_binary_structure(rank=4, connectivity=4)
+
+# mask
+mask_2d_np = np.array([[1, 1, 0], [1, 1, 1], [1, 1, 0]], dtype=bool)
+mask_2d_tm = torch.tensor([[[[1, 1, 0], [1, 1, 1], [1, 1, 0]]]], dtype=bool)
+
+mask_3d_np = np.zeros((5, 5, 5), dtype=bool)
+mask_3d_np[0:2, 0:1, 0:3] = True
+mask_3d_tm = torch.zeros((2, 1, 5, 5, 5), dtype=bool)
+mask_3d_tm[:, :, 0:2, 0:1, 0:3] = True
+
+mask_4d_np = np.zeros((4, 4, 4, 4), dtype=bool)
+mask_4d_np[1:2, 0:1, 1:3] = True
+mask_4d_tm = torch.zeros((2, 1, 4, 4, 4, 4), dtype=bool)
+mask_4d_tm[:, :, 1:2, 0:1, 1:3] = True
+
+# output
+output_2d_np = np.empty([3, 3])
+output_2d_tm = torch.empty([1, 1, 3, 3])
+
+output_3d_np = np.empty([5, 5, 5])
+output_3d_tm = torch.empty([2, 1, 5, 5, 5])
+
+output_4d_np = np.empty([4, 4, 4, 4])
+output_4d_tm = torch.empty([2, 1, 4, 4, 4, 4])
 
 
 @pytest.mark.parametrize(
@@ -205,4 +244,83 @@ def test_binary_basic(
         border_value=border_value,
     )
     expected = torch.as_tensor(expected_np)
+    torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.parametrize(
+    ("input_np, scipy_func, mask_np, mask_tm"),
+    [
+        pytest.param(case_2d, binary_erosion, mask_2d_np, mask_2d_tm, id="er_2d_mask"),
+        pytest.param(case_2d, binary_dilation, mask_2d_np, mask_2d_tm, id="di_2d_mask"),
+        pytest.param(case_2d, binary_opening, mask_2d_np, mask_2d_tm, id="op_2d_mask"),
+        pytest.param(case_2d, binary_closing, mask_2d_np, mask_2d_tm, id="cl_2d_mask"),
+        pytest.param(case_3d, binary_erosion, mask_3d_np, mask_3d_tm, id="er_3d_mask"),
+        pytest.param(case_3d, binary_dilation, mask_3d_np, mask_3d_tm, id="di_3d_mask"),
+        pytest.param(case_3d, binary_opening, mask_3d_np, mask_3d_tm, id="op_3d_mask"),
+        pytest.param(case_3d, binary_closing, mask_3d_np, mask_3d_tm, id="cl_3d_mask"),
+        pytest.param(case_4d, binary_erosion, mask_4d_np, mask_4d_tm, id="er_4d_mask"),
+        pytest.param(case_4d, binary_dilation, mask_4d_np, mask_4d_tm, id="di_4d_mask"),
+        pytest.param(case_4d, binary_opening, mask_4d_np, mask_4d_tm, id="op_4d_mask"),
+        pytest.param(case_4d, binary_closing, mask_4d_np, mask_4d_tm, id="cl_4d_mask"),
+    ],
+)
+def test_binary_mask(
+    input_np,
+    scipy_func,
+    mask_np,
+    mask_tm,
+):
+    x = torch.as_tensor(input_np, dtype=torch.float32)
+    tm_func = getattr(tm, scipy_func.__name__)
+    actual = tm_func(
+        x,
+        mask=mask_tm,
+    )
+
+    expected_np = batch_scipy(
+        input_np,
+        scipy_func,
+        mask=mask_np,
+    )
+    expected = torch.as_tensor(expected_np)
+    torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.parametrize(
+    "input_np,scipy_func, output_np, output_tm",
+    [
+        pytest.param(case_2d, binary_erosion, output_2d_np, output_2d_tm, id='er_output_2d'),
+        pytest.param(case_2d, binary_dilation, output_2d_np, output_2d_tm, id='di_output_2d'),
+        pytest.param(case_2d, binary_opening, output_2d_np, output_2d_tm, id='op_output_2d'),
+        pytest.param(case_2d, binary_closing, output_2d_np, output_2d_tm, id='cl_output_2d'),
+        pytest.param(case_3d, binary_erosion, output_3d_np, output_3d_tm, id='er_output_3d'),
+        pytest.param(case_3d, binary_dilation, output_3d_np, output_3d_tm, id='di_output_3d'),
+        pytest.param(case_3d, binary_opening, output_3d_np, output_3d_tm, id='op_output_3d'),
+        pytest.param(case_3d, binary_closing, output_3d_np, output_3d_tm, id='cl_output_3d'),
+        pytest.param(case_4d, binary_erosion, output_4d_np, output_4d_tm, id='er_output_4d'),
+        pytest.param(case_4d, binary_dilation, output_4d_np, output_4d_tm, id='di_output_4d'),
+        pytest.param(case_4d, binary_opening, output_4d_np, output_4d_tm, id='op_output_4d'),
+        pytest.param(case_4d, binary_closing, output_4d_np, output_4d_tm, id='cl_output_4d'),
+    ],
+)
+def test_binary_output(
+    input_np,
+    scipy_func,
+    output_np,
+    output_tm,
+):
+    x = torch.as_tensor(input_np, dtype=torch.float32)
+    tm_func = getattr(tm, scipy_func.__name__)
+
+    actual = tm_func(
+        x,
+        output=output_tm,
+    )
+
+    expected_np = batch_scipy(
+        input_np,
+        scipy_func,
+        output=output_np,
+    )
+    expected = torch.as_tensor(expected_np, dtype=torch.float32)
     torch.testing.assert_close(actual, expected)
