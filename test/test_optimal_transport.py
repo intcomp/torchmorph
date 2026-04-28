@@ -79,8 +79,7 @@ def test_sinkhorn_balanced_print():
 
     # Check CUDA availability
     if not torch.cuda.is_available():
-        print("Warning: CUDA not available, tests may fail.")
-        device = 'cpu'
+        raise ValueError("Warning: CUDA not available, tests may fail.")
     else:
         device = 'cuda'
         print("CUDA available, running on GPU.")

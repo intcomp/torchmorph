@@ -14,32 +14,36 @@ spec = importlib.util.spec_from_file_location("optimal_transport", module_path)
 tr = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(tr)
 
-torch.manual_seed(42)
-
 
 def run_sinkhorn_balanced_benchmark():
     # Set parameters
     B, C, H, W = 1, 1, 32, 32
+    myreg = 0.5
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = torch.float32
+    torch.manual_seed(42)
 
     # Prepare input data
     source = torch.rand(B, C, H, W, device=device, dtype=dtype)
     target = torch.rand(B, C, H, W, device=device, dtype=dtype)
     source = source / source.sum()
     target = target / target.sum()
+    cost_matrix = tr.build_cost_matrix((H, W), device=device, p=2)
 
     globals_dict = {
         "tr": tr,
         "source": source,
         "target": target,
+        "myreg": myreg,
+        "cost_matrix": cost_matrix,
     }
 
-    stmt = "tr.sinkhorn_balanced(source, target, reg=10.0, itrstep=100)"
+    stmt = "tr.sinkhorn_balanced(source, target, cost_matrix=cost_matrix, reg=myreg,"
+    "itrstep=100,threshold=1e-5)"
 
     timer = benchmark.Timer(stmt=stmt, globals=globals_dict)
     # result_sinkhorn_balanced = timer.blocked_autorange(min_run_time=1)
-    number_of_runs = 50
+    number_of_runs = 100
     result_sinkhorn_balanced = timer.timeit(number_of_runs)
     return result_sinkhorn_balanced
 
@@ -47,8 +51,10 @@ def run_sinkhorn_balanced_benchmark():
 def run_ot_sinkhorn_benchmark():
     # Set parameters
     H, W = 32, 32
+    myreg = 0.5
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = torch.float32
+    torch.manual_seed(42)
 
     # Prepare input data
     source = torch.rand(H * W, device=device, dtype=dtype)
@@ -62,13 +68,14 @@ def run_ot_sinkhorn_benchmark():
         "source": source,
         "target": target,
         "M": M,
+        "myreg": myreg,
     }
 
-    stmt = "ot.sinkhorn(source, target, M, reg=10.0, numItermax=100)"
+    stmt = "ot.sinkhorn(source, target, M, reg=1/myreg, numItermax=100, stopThr=1e-5)"
 
     timer = benchmark.Timer(stmt=stmt, globals=globals_dict)
     # timer.blocked_autorange(min_run_time=1)
-    number_of_runs = 50
+    number_of_runs = 100
     result_ot = timer.timeit(number_of_runs)
     return result_ot
 
@@ -91,7 +98,7 @@ def large_scale_sinkhorn_balanced_benchmark():
         "target": target,
     }
 
-    stmt = "tr.sinkhorn_balanced(source, target, reg=10.0, itrstep=100)"
+    stmt = "tr.sinkhorn_balanced(source, target, reg=25.0, itrstep=100)"
 
     timer = benchmark.Timer(stmt=stmt, globals=globals_dict)
     # result_sinkhorn_balanced = timer.blocked_autorange(min_run_time=1)
@@ -118,7 +125,7 @@ def batch_channel_sinkhorn_balanced_benchmark():
         "target": target,
     }
 
-    stmt = "tr.sinkhorn_balanced(source, target, reg=10.0, itrstep=100)"
+    stmt = "tr.sinkhorn_balanced(source, target, reg=25.0, itrstep=100)"
 
     timer = benchmark.Timer(stmt=stmt, globals=globals_dict)
     # result_sinkhorn_balanced = timer.blocked_autorange(min_run_time=1)
@@ -130,13 +137,12 @@ def batch_channel_sinkhorn_balanced_benchmark():
 if __name__ == "__main__":
     result_sinkhorn_balanced = run_sinkhorn_balanced_benchmark()
     result_ot = run_ot_sinkhorn_benchmark()
-    result_large_scale = large_scale_sinkhorn_balanced_benchmark()
-    result_batch_channel = batch_channel_sinkhorn_balanced_benchmark()
+    # result_large_scale = large_scale_sinkhorn_balanced_benchmark()
+    # result_batch_channel = batch_channel_sinkhorn_balanced_benchmark()
 
-print(result_sinkhorn_balanced)
-print(result_ot)
-print(result_large_scale)
-print(result_batch_channel)
-
-speedup = result_ot.mean / result_sinkhorn_balanced.mean
-print(f"My sinkhorn to OT sinkhorn Speedup: {speedup:.1f}x")
+    print(result_sinkhorn_balanced)
+    print(result_ot)
+    speedup = result_ot.mean / result_sinkhorn_balanced.mean
+    print(f"My sinkhorn to OT sinkhorn Speedup: {speedup:.1f}x")
+    # print(result_large_scale)
+    # print(result_batch_channel)
