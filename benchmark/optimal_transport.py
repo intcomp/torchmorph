@@ -30,6 +30,10 @@ def run_sinkhorn_balanced_benchmark():
     target = target / target.sum()
     cost_matrix = tr.build_cost_matrix((H, W), device=device, p=2)
 
+    source, target, cost_matrix = tr.data_preprocess(
+        source, target, cost_matrix=cost_matrix, p=2, device=device
+    )
+
     globals_dict = {
         "tr": tr,
         "source": source,
@@ -38,8 +42,10 @@ def run_sinkhorn_balanced_benchmark():
         "cost_matrix": cost_matrix,
     }
 
-    stmt = "tr.sinkhorn_balanced(source, target, cost_matrix=cost_matrix, reg=myreg,"
-    "itrstep=100,threshold=1e-5)"
+    stmt = (
+        "tr.sinkhorn_balanced(source, target, cost_matrix=cost_matrix, "
+        "reg=myreg, itrstep=100, threshold=1e-5)"
+    )
 
     timer = benchmark.Timer(stmt=stmt, globals=globals_dict)
     # result_sinkhorn_balanced = timer.blocked_autorange(min_run_time=1)
@@ -98,7 +104,7 @@ def large_scale_sinkhorn_balanced_benchmark():
         "target": target,
     }
 
-    stmt = "tr.sinkhorn_balanced(source, target, reg=25.0, itrstep=100)"
+    stmt = "tr.sinkhorn_balanced_full(source, target, reg=25.0, itrstep=100, threshold=1e-5)"
 
     timer = benchmark.Timer(stmt=stmt, globals=globals_dict)
     # result_sinkhorn_balanced = timer.blocked_autorange(min_run_time=1)
@@ -125,7 +131,7 @@ def batch_channel_sinkhorn_balanced_benchmark():
         "target": target,
     }
 
-    stmt = "tr.sinkhorn_balanced(source, target, reg=25.0, itrstep=100)"
+    stmt = "tr.sinkhorn_balanced_full(source, target, reg=25.0, itrstep=100, threshold=1e-5)"
 
     timer = benchmark.Timer(stmt=stmt, globals=globals_dict)
     # result_sinkhorn_balanced = timer.blocked_autorange(min_run_time=1)

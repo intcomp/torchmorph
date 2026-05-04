@@ -27,6 +27,18 @@ std::tuple<torch::Tensor, torch::Tensor> bfdt_cuda(
     bool return_indices
 );
 
+// Optimal Transport functions
+std::tuple<torch::Tensor, torch::Tensor> sinkhorn_uv_cuda(
+    const torch::Tensor source,
+    const torch::Tensor target,
+    const torch::Tensor k,
+    torch::Tensor u,
+    torch::Tensor v,
+    int itrstep,
+    int N
+);
+
+
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("add_cuda", &add_cuda, "Add tensor with scalar");
@@ -53,4 +65,17 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           py::arg("sampling") = std::vector<float>(),
           py::arg("return_distances") = true,
           py::arg("return_indices") = false);
+
+    // Optimal Transport
+    m.def("sinkhorn_uv_cuda", &sinkhorn_uv_cuda,
+          "Sinkhorn UV CUDA",
+          py::arg("source"),
+          py::arg("target"),
+          py::arg("k"),
+          py::arg("u"),
+          py::arg("v"),
+          py::arg("itrstep"),
+          py::arg("N"));
 }
+
+

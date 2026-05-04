@@ -95,7 +95,7 @@ def test_sinkhorn_balanced_print():
 
     print("\n--- Calling sinkhorn_balanced ---")
     try:
-        P = tr.sinkhorn_balanced(
+        P = tr.sinkhorn_balanced_full(
             source,
             target,
             cost_matrix=None,

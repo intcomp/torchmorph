@@ -3,6 +3,8 @@ from typing import Optional
 import torch
 from torch import Tensor
 
+# from torchmorph import _C
+
 
 # generate cost matrix for multi-dimensional tensor like 2D or 3D tensor
 def build_cost_matrix(
@@ -16,22 +18,95 @@ def build_cost_matrix(
     return cost_matrix
 
 
-def distribution_preprocess():
-    pass
+def data_preprocess(
+    source: Tensor,
+    target: Tensor,
+    cost_matrix: Optional[Tensor] = None,
+    p: int = 2,
+    device: str = 'cuda',
+):
+    # check dimensions,reshape and choose strategy
+    if not source.ndim == target.ndim or not source.shape == target.shape:
+        raise ValueError(
+            "Source and target must have the same number of dimensions and the same shape."
+        )
+    elif source.ndim == 2:
+        if cost_matrix is None:
+            cost_matrix = build_cost_matrix(source.shape, device=device, p=p)
+        source = source.view(1, 1, -1)
+        target = target.view(1, 1, -1)
+    elif source.ndim > 2:
+        # cut and reshape source and target to coordinate tensors, then calculate cost matrix
+        B, C = source.shape[:2]  # get batch and channel dimensions
+        if cost_matrix is None:
+            spatial_shape = source.shape[2:]
+            cost_matrix = build_cost_matrix(spatial_shape, device=device, p=p)
+        source = source.view(B, C, -1)
+        target = target.view(B, C, -1)
+
+    # move to specified device(cuda) and ensure dtype float32
+    source = source.to(device=device, dtype=torch.float32)
+    target = target.to(device=device, dtype=torch.float32)
+    cost_matrix = cost_matrix.to(device=device, dtype=torch.float32)
+
+    # ensure non-negativity
+    source = torch.clamp(source, min=0)
+    target = torch.clamp(target, min=0)
+
+    # normalize source and target to make them valid probability distributions
+    source /= torch.clamp(source.sum(dim=-1, keepdim=True).to(device), min=1e-12)
+    target /= torch.clamp(target.sum(dim=-1, keepdim=True).to(device), min=1e-12)
+
+    return source, target, cost_matrix
+
+
+def sinkhorn_balanced_full(
+    source: Tensor,
+    target: Tensor,
+    cost_matrix: Optional[Tensor] = None,
+    p: int = 2,
+    reg: float = 1.0,
+    itrstep: int = 0,
+    threshold: float = 0,
+    returngrad: bool = False,
+    device: str = 'cuda',
+    verbose: bool = False,
+):
+    source, target, cost_matrix = data_preprocess(
+        source,
+        target,
+        cost_matrix=cost_matrix,
+        p=p,
+        device=device,
+    )
+    result = sinkhorn_balanced(
+        source,
+        target,
+        cost_matrix=cost_matrix,
+        reg=reg,
+        itrstep=itrstep,
+        threshold=threshold,
+        returnuv=returngrad,
+        device=device,
+        verbose=verbose,
+    )
+
+    if returngrad:
+        return result
+    return result["plan"]
 
 
 # sinkhorn iteration
 def sinkhorn_balanced(
     source: Tensor,  # (B,C,*Spatial)
     target: Tensor,  # (B,C,*Spatial)
-    cost_matrix: Optional[Tensor] = None,
-    p: int = 2,  # only effective when cost_matrix is None
+    cost_matrix: Tensor,
     reg: float = 1.0,
     itrstep: int = 0,
     threshold: float = 0,
-    returngrad: bool = False,  # whether to return the gradient of the dual potential
+    returnuv: bool = False,  # whether to return the gradient of the dual potential
     device: str = 'cuda',
-    debugflag: bool = False,
+    verbose: bool = False,
 ):
     """Compute a balanced entropic optimal transport plan with Sinkhorn iterations.
 
@@ -62,36 +137,15 @@ def sinkhorn_balanced(
     if not torch.cuda.is_available():
         raise ValueError("CUDA device not available.")
 
-    # check dimensions,reshape and choose strategy
-    if not source.ndim == target.ndim:
-        raise ValueError("Source and target must have the same number of dimensions.")
-    elif source.ndim == 2:
-        if cost_matrix is None:
-            cost_matrix = build_cost_matrix(source.shape, device=device, p=p)
-        source = source.view(1, 1, -1)
-        target = target.view(1, 1, -1)
-    elif source.ndim > 2:
-        # cut and reshape source and target to coordinate tensors, then calculate cost matrix
-        B, C = source.shape[:2]  # get batch and channel dimensions
-        if cost_matrix is None:
-            spatial_shape = source.shape[2:]
-            cost_matrix = build_cost_matrix(spatial_shape, device=device, p=p)
-        source = source.view(B, C, -1)
-        target = target.view(B, C, -1)
-
-    # ensure non-negativity
-    source = torch.clamp(source, min=0)
-    target = torch.clamp(target, min=0)
-
-    # normalize source and target to make them valid probability distributions
-    source /= torch.clamp(source.sum(dim=-1, keepdim=True).to(device), min=1e-12)
-    target /= torch.clamp(target.sum(dim=-1, keepdim=True).to(device), min=1e-12)
+    if source.ndim != 3 or target.ndim != 3:
+        raise ValueError("source and target must be preprocessed to shape (B, C, N).")
 
     # initialize u and v, and expand dimensions for batch and channel
     u = torch.ones_like(source, device=device)
     v = torch.ones_like(target, device=device)
     k = torch.exp(-cost_matrix * reg)
 
+    B, C = source.shape[:2]
     k = k.unsqueeze(0).unsqueeze(0).expand(B, C, -1, -1)
 
     if reg <= 0:
@@ -115,18 +169,17 @@ def sinkhorn_balanced(
             convergence_flag = True
             break
 
-    # diagonalize u and v, then calculate optimal transport plan P
-    u_diag = torch.diag_embed(u)
-    v_diag = torch.diag_embed(v)
-    P = u_diag @ k @ v_diag
+    # use broadcasting to calculate the optimal transport plan P from u, v and K
+    P = u.unsqueeze(-1) * k * v.unsqueeze(-2)
 
-    if convergence_flag:
-        print(f"Sinkhorn iteration completed in {i+1} steps.Convergence: {convergence_flag}")
-    else:
-        print(f"Sinkhorn iteration completed in {i+1} steps,Covergence didn't complete.")
+    if verbose:
+        if convergence_flag:
+            print(f"Sinkhorn iteration completed in {i+1} steps.Convergence: {convergence_flag}")
+        else:
+            print(f"Sinkhorn iteration completed in {i+1} steps,Covergence didn't complete.")
 
     # calculate gradient after iteration covergence ,return results
-    if returngrad:
+    if returnuv:
         return {"plan": P, "u": u, "v": v}
     else:
         return {"plan": P}
@@ -143,3 +196,28 @@ def sinkhorn_gradient(u: Tensor, v: Tensor, reg: float):
     grad_target = v / reg
 
     return grad_source, grad_target
+
+
+def sinkhorn_balanced_cuda(
+    source: Tensor,
+    target: Tensor,
+    cost_matrix: Tensor,
+    reg: float = 1.0,
+    itrstep: int = 100,
+    returnuv: bool = False,
+):
+    from torchmorph import _C
+
+    N = source.shape[-1]
+    K = torch.exp(-cost_matrix * reg)
+    u = torch.ones_like(source)
+    v = torch.ones_like(target)
+
+    u, v = _C.sinkhorn_uv_cuda(source, target, K, u, v, int(itrstep), int(N))
+
+    P = u.unsqueeze(-1) * K * v.unsqueeze(-2)
+
+    if returnuv:
+        return {"plan": P, "u": u, "v": v}
+    else:
+        return {"plan": P}
