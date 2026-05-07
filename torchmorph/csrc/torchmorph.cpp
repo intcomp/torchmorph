@@ -28,7 +28,7 @@ std::tuple<torch::Tensor, torch::Tensor> bfdt_cuda(
 );
 
 // Optimal Transport functions
-std::tuple<torch::Tensor, torch::Tensor> sinkhorn_uv_cuda(
+std::tuple<torch::Tensor, torch::Tensor> sinkhorn_fastiter(
     const torch::Tensor source,
     const torch::Tensor target,
     const torch::Tensor k,
@@ -67,8 +67,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           py::arg("return_indices") = false);
 
     // Optimal Transport
-    m.def("sinkhorn_uv_cuda", &sinkhorn_uv_cuda,
-          "Sinkhorn UV CUDA",
+    m.def("sinkhorn_fastiter", &sinkhorn_fastiter,
+          "Sinkhorn Fast Iteration CUDA",
           py::arg("source"),
           py::arg("target"),
           py::arg("k"),

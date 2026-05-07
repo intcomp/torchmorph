@@ -86,7 +86,19 @@ __global__ void v_update(
     }
 }
 
-std::tuple<torch::Tensor, torch::Tensor> sinkhorn_uv_cuda(
+__global__ void sinkhorn_large(
+    const float* a,
+    const float* b,
+    const float* K,
+    float* u,
+    float* v,
+    int N
+){
+    //sinkhorn for large scale matrix
+}
+
+
+std::tuple<torch::Tensor, torch::Tensor> sinkhorn_fastiter(
     const torch::Tensor source,
     const torch::Tensor target,
     const torch::Tensor k,

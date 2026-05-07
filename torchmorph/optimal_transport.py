@@ -23,18 +23,29 @@ def data_preprocess(
     target: Tensor,
     cost_matrix: Optional[Tensor] = None,
     p: int = 2,
+    force_batched: bool = False,
     device: str = 'cuda',
+    dtype=torch.float32,
 ):
+    """Validate, move, reshape, and normalize Sinkhorn input distributions.
+
+    If batch_flag is True, 1D/2D inputs are reshaped to (1, 1, N).
+    Higher-dimensional inputs are reshaped from (B, C, *Spatial) to (B, C, N).
+    """
     # check dimensions,reshape and choose strategy
     if not source.ndim == target.ndim or not source.shape == target.shape:
         raise ValueError(
             "Source and target must have the same number of dimensions and the same shape."
         )
-    elif source.ndim == 2:
+    elif source.ndim <= 2:
         if cost_matrix is None:
             cost_matrix = build_cost_matrix(source.shape, device=device, p=p)
-        source = source.view(1, 1, -1)
-        target = target.view(1, 1, -1)
+        if force_batched:
+            source = source.view(1, 1, -1)
+            target = target.view(1, 1, -1)
+        else:
+            source = source.view(-1)
+            target = target.view(-1)
     elif source.ndim > 2:
         # cut and reshape source and target to coordinate tensors, then calculate cost matrix
         B, C = source.shape[:2]  # get batch and channel dimensions
@@ -45,9 +56,9 @@ def data_preprocess(
         target = target.view(B, C, -1)
 
     # move to specified device(cuda) and ensure dtype float32
-    source = source.to(device=device, dtype=torch.float32)
-    target = target.to(device=device, dtype=torch.float32)
-    cost_matrix = cost_matrix.to(device=device, dtype=torch.float32)
+    source = source.to(device=device, dtype=dtype)
+    target = target.to(device=device, dtype=dtype)
+    cost_matrix = cost_matrix.to(device=device, dtype=dtype)
 
     # ensure non-negativity
     source = torch.clamp(source, min=0)
@@ -78,8 +89,9 @@ def sinkhorn_balanced_full(
         cost_matrix=cost_matrix,
         p=p,
         device=device,
+        force_batched=True,
     )
-    result = sinkhorn_balanced(
+    result = sinkhorn_balanced_batch(
         source,
         target,
         cost_matrix=cost_matrix,
@@ -96,8 +108,7 @@ def sinkhorn_balanced_full(
     return result["plan"]
 
 
-# sinkhorn iteration
-def sinkhorn_balanced(
+def sinkhorn_balanced_batch(
     source: Tensor,  # (B,C,*Spatial)
     target: Tensor,  # (B,C,*Spatial)
     cost_matrix: Tensor,
@@ -110,28 +121,20 @@ def sinkhorn_balanced(
 ):
     """Compute a balanced entropic optimal transport plan with Sinkhorn iterations.
 
-    Uses the Gibbs kernel K = exp(-reg * C), where `reg` is the inverse
-    regularization scale. Source and target are clamped to be non-negative,
-    normalized over the flattened spatial dimension, and matched by iterative
-    Sinkhorn scaling.
+    Builds K = exp(-reg * C), iteratively updates scaling vectors u and v,
+    and returns the transport plan P.
 
     Args:
-        source (Tensor): Source distribution, shape (B, C, *Spatial) or (*Spatial).
-        target (Tensor): Target distribution with the same shape as source.
-        cost_matrix (Tensor, optional): Pairwise cost matrix of shape (N, N).
-        p (int): Lp norm used to build the cost matrix when not provided.
-        reg (float): Positive inverse regularization parameter.
+        source (Tensor): Preprocessed source distribution with shape (B, C, N).
+        target (Tensor): Preprocessed target distribution with shape (B, C, N).
+        cost_matrix (Tensor): Pairwise cost matrix with shape (N, N).
+        reg (float): Inverse regularization parameter.
         itrstep (int): Number of Sinkhorn iterations.
-        threshold (float): Stopping threshold on the change of the source scaling.
-        returngrad (bool): If True, also return scaling vectors u and v.
-        device (str): Computation device, typically 'cuda'.
+        threshold (float): Optional convergence threshold.
+        returnuv (bool): If True, also return u and v.
 
     Returns:
-        dict: Contains "plan" and, when requested, "u" and "v".
-
-    Raises:
-        ValueError: If dimensions, regularization, device, or stopping settings
-            are invalid.
+        dict: Transport plan, and optionally scaling vectors u and v.
     """
     # Device check
     if not torch.cuda.is_available():
@@ -152,20 +155,22 @@ def sinkhorn_balanced(
         raise ValueError("Regularization parameter must be positive.")
 
     # generate sinkhorn iteration judged by threshold or iteration times
-    if itrstep == 0 and threshold > 0:
-        step = 1000
+    if itrstep < 0 or threshold < 0:
+        raise ValueError("iterstep and threshold must be non-negative.")
     elif itrstep == 0 and threshold == 0:
         raise ValueError("Invalid iteration or step settings. ")
-    else:
-        step = itrstep
+
+    if threshold > 0 and itrstep == 0:
+        itrstep = 500
 
     # iteration
     convergence_flag = False
-    for i in range(step):
-        u_old = u.clone()
+    convergence_check = 10
+    for i in range(itrstep):
+        u_old = u
         u = source / (torch.matmul(k, v.unsqueeze(-1)).squeeze(-1) + 1e-12)
         v = target / (torch.matmul(k.transpose(-2, -1), u.unsqueeze(-1)).squeeze(-1) + 1e-12)
-        if (u_old - u).abs().sum().mean() < threshold:
+        if i % convergence_check == 0 and (u_old - u).abs().sum().mean() < threshold:
             convergence_flag = True
             break
 
@@ -177,6 +182,54 @@ def sinkhorn_balanced(
             print(f"Sinkhorn iteration completed in {i+1} steps.Convergence: {convergence_flag}")
         else:
             print(f"Sinkhorn iteration completed in {i+1} steps,Covergence didn't complete.")
+
+    # calculate gradient after iteration covergence ,return results
+    if returnuv:
+        return {"plan": P, "u": u, "v": v}
+    else:
+        return {"plan": P}
+
+
+def sinkhorn_balanced(
+    source: Tensor,  # (N,)
+    target: Tensor,  # (N,)
+    cost_matrix: Tensor,
+    reg: float = 1.0,
+    itrstep: int = 0,
+    threshold: float = 0,
+    returnuv: bool = False,  # whether to return the gradient of the dual potential
+    device: str = 'cuda',
+):
+    device = device if torch.cuda.is_available() else 'cpu'
+
+    # initialize u and v, and expand dimensions for batch and channel
+    u = torch.ones_like(source, device=device)
+    v = torch.ones_like(target, device=device)
+    k = torch.exp(-cost_matrix * reg)
+
+    if reg <= 0:
+        raise ValueError("Regularization parameter must be positive.")
+
+    # generate sinkhorn iteration judged by threshold or iteration times
+    if itrstep < 0 or threshold < 0:
+        raise ValueError("iterstep and threshold must be non-negative.")
+    elif itrstep == 0 and threshold == 0:
+        raise ValueError("Invalid iteration or step settings. ")
+
+    if threshold > 0 and itrstep == 0:
+        itrstep = 500
+
+    # iteration
+    convergence_check = 10
+    for i in range(itrstep):
+        u_old = u
+        u = source / (torch.matmul(k, v.unsqueeze(-1)).squeeze(-1) + 1e-12)
+        v = target / (torch.matmul(k.transpose(-2, -1), u.unsqueeze(-1)).squeeze(-1) + 1e-12)
+        if i % convergence_check == 0 and (u_old - u).abs().sum().mean() < threshold:
+            break
+
+    # use broadcasting to calculate the optimal transport plan P from u, v and K
+    P = u.unsqueeze(-1) * k * v.unsqueeze(-2)
 
     # calculate gradient after iteration covergence ,return results
     if returnuv:
@@ -213,7 +266,7 @@ def sinkhorn_balanced_cuda(
     u = torch.ones_like(source)
     v = torch.ones_like(target)
 
-    u, v = _C.sinkhorn_uv_cuda(source, target, K, u, v, int(itrstep), int(N))
+    u, v = _C.sinkhorn_fastiter(source, target, K, u, v, int(itrstep), int(N))
 
     P = u.unsqueeze(-1) * K * v.unsqueeze(-2)
 

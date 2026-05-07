@@ -119,6 +119,48 @@ def test_sinkhorn_balanced_print():
         traceback.print_exc()
 
 
+def test_sinkhorn_cuda():
+    if not torch.cuda.is_available():
+        raise ValueError("CUDA not available, skipping CUDA test.")
+
+    device = 'cuda'
+    # Create two random distributions
+    torch.manual_seed(42)
+    source = torch.rand(2, 2, device=device)
+    target = torch.rand(2, 2, device=device)
+
+    print("\n--- Input source ---")
+    print(source)
+    print("\n--- Input target ---")
+    print(target)
+
+    source, target, cost_matrix = tr.data_preprocess(source, target, device=device)
+
+    torch_result = tr.sinkhorn_balanced(
+        source=source,
+        target=target,
+        cost_matrix=cost_matrix,
+        reg=0.02,
+        itrstep=100,
+    )
+
+    cuda_result = tr.sinkhorn_balanced_cuda(
+        source=source,
+        target=target,
+        cost_matrix=cost_matrix,
+        reg=0.02,
+        itrstep=100,
+    )
+
+    relative_error = torch.linalg.norm(cuda_result["plan"] - torch_result["plan"]) / torch.clamp(
+        torch.linalg.norm(torch_result["plan"]), min=1e-12
+    )
+
+    print(f"CUDA relative error: {relative_error.item():.4e}")
+    assert relative_error < 1e-4
+
+
 if __name__ == "__main__":
     test_sinkhorn_balanced_print()
     test_build_cost_matrix()
+    test_sinkhorn_cuda()
