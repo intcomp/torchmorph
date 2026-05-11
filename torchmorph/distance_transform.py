@@ -14,64 +14,63 @@ def euclidean_distance_transform(
     indices: Optional[torch.Tensor] = None,
     algorithm: str = "exact",
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor], None]:
-    """Exact Euclidean Distance Transform (EDT) using Felzenszwalb algorithm.
+    """Compute the Euclidean distance transform of an N-dimensional binary tensor
+
+    The exact algorithm treats ``input`` as ``(B, C, *spatial)`` and processes
+    each batch/channel slice independently. Zero values are background sites;
+    non-zero values are foreground sites whose distance to the nearest
+    background site is computed.
 
     Args:
-        input: Binary input tensor (0 = background, non-zero = foreground).
-               Must be in (B, C, Spatial...) format where Spatial can be 1D, 2D, or 3D.
-               For single images, use unsqueeze to add batch and channel dims.
-        sampling: Spacing of elements along each spatial dimension. If a single
-                  number, the spacing is uniform in all spatial dimensions. If a
-                  sequence, it must match the number of spatial dimensions.
-                  Default is None (unit spacing for all spatial dimensions).
-                  Note: When sampling is not unit spacing, only "exact" algorithm is used.
-        return_distances: Whether to calculate the distance transform.
-                          Default is True.
-        return_indices: Whether to calculate the feature transform (indices
-                        of closest background element). Default is False.
-        distances: Optional output tensor for distances. If provided, must have
-                   the same shape as input. If None and return_distances is True,
-                   a new tensor will be created and returned.
-        indices: Optional output tensor for indices. If provided, must have shape
-                 (spatial_ndim, ...) where ... matches input shape. If None and
-                 return_indices is True, a new tensor will be created and returned.
-        algorithm: Algorithm to use for distance transform. Options:
-                   - "exact": Use Felzenszwalb's exact algorithm (default).
-                   - "jfa": Use Jump Flooding Algorithm (fast but approximate).
-                            Only available for 2D/3D with unit sampling.
-                   - "auto": Automatically choose based on input (uses JFA when
-                            applicable, otherwise exact).
+        input (torch.Tensor): CUDA tensor with shape ``(B, C, *spatial)`` and at
+            least one spatial dimension. Add batch and channel dimensions for a
+            single image or volume.
+        sampling (Optional[float | Sequence[float]]): Physical spacing for the
+            spatial dimensions. ``None`` uses unit spacing, a scalar is
+            broadcast to all spatial dimensions, and a sequence must have either
+            one value or one value per spatial dimension.
+        return_distances (bool): Whether to compute distance values.
+        return_indices (bool): Whether to compute nearest-background coordinates.
+        distances (Optional[torch.Tensor]): Optional preallocated distance
+            output with the same shape as ``input``. Provided tensors are filled
+            in-place and omitted from the return value.
+        indices (Optional[torch.Tensor]): Optional preallocated index output
+            with shape ``(spatial_ndim, *input.shape)``. Provided tensors are
+            filled in-place and omitted from the return value.
+        algorithm (str): Algorithm selector. ``"exact"`` is the standard
+            N-dimensional path. ``"jfa"`` requests the approximate Jump
+            Flooding Algorithm for unit-spaced 2D/3D distance-only use and
+            otherwise falls back to exact. ``"auto"`` may choose JFA for
+            eligible 2D unit-spaced distance computations. Use ``"exact"``
+            when requesting indices, using multi-channel inputs, or relying on
+            documented ``(B, C, *spatial)`` batch/channel semantics.
 
     Returns:
-        Depending on return_distances, return_indices, and whether output tensors
-        are provided:
-            - Returns distance tensor only when return_distances=True and distances=None
-            - Returns indices tensor only when return_indices=True and indices=None
-            - Returns tuple of (distances, indices) when both conditions above are met
-            - Returns None if output tensors are provided for all requested outputs
+        torch.Tensor | tuple[torch.Tensor, torch.Tensor] | None: Requested
+        outputs that were not supplied through ``distances`` or ``indices``.
+        For ``algorithm="exact"``, distances have shape ``input.shape`` and
+        indices have shape ``(spatial_ndim, *input.shape)``. Returns ``None``
+        when all requested outputs were preallocated.
 
-    Example:
+    Examples:
+        ```pycon
+        >>> import torch
         >>> import torchmorph as tm
-        >>> # 2D image: (B, C, H, W)
-        >>> x = torch.zeros(1, 1, 64, 64, device='cuda')
-        >>> x[0, 0, 10:20, 10:20] = 1
-        >>> dist = tm.euclidean_distance_transform(x)
-        >>> dist, indices = tm.euclidean_distance_transform(x, return_indices=True)
-        >>> dist = tm.euclidean_distance_transform(x, sampling=[0.5, 1.0])
-        >>> # Using JFA algorithm (faster for large images)
-        >>> dist = tm.euclidean_distance_transform(x, algorithm="jfa")
-        >>> # Using pre-allocated output tensors
-        >>> dist_out = torch.empty_like(x)
-        >>> tm.euclidean_distance_transform(x, distances=dist_out)  # Returns None, fills dist_out
-        >>> # 3D volume: (B, C, D, H, W)
-        >>> x_3d = torch.zeros(2, 1, 32, 64, 64, device='cuda')
-        >>> dist_3d = tm.euclidean_distance_transform(x_3d, sampling=[2.0, 1.0, 1.0])
+        >>> x = torch.zeros(1, 1, 4, 4, 4, 4, device="cuda")
+        >>> x[..., 1, 1, 1, 1] = 1
+        >>> dist = tm.euclidean_distance_transform(x, algorithm="exact")
+        >>> dist.shape
+        torch.Size([1, 1, 4, 4, 4, 4])
+        >>> dist, idx = tm.euclidean_distance_transform(x, algorithm="exact", return_indices=True)
+        >>> idx.shape
+        torch.Size([4, 1, 1, 4, 4, 4, 4])
+        ```
     """
     if not input.is_cuda:
         raise ValueError("Input tensor must be on CUDA device.")
     if input.ndim < 3:
         raise ValueError(
-            f"Input must be (B, C, ) format with at least 3 dimensions, got {input.shape}. "
+            f"Input must be (B, C, *spatial) format with at least 3 dimensions, got {input.shape}. "
             "For single images, use unsqueeze to add batch and channel dims."
         )
     if input.numel() == 0:
@@ -156,51 +155,45 @@ def chamfer_distance_transform(
     distances: Optional[torch.Tensor] = None,
     indices: Optional[torch.Tensor] = None,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor], None]:
-    """Chamfer Distance Transform (CDT).
+    """Compute the chamfer distance transform of an N-dimensional binary tensor
 
-    Calculates the distance transform of the input using a chamfer metric.
-    The input is treated as a binary image where non-zero values are foreground
-    and zero values are background. Distances are computed from each foreground
-    pixel to the nearest background pixel.
+    The input is treated as ``(B, C, *spatial)`` and each batch/channel slice is
+    processed independently. Zero values are background sites and non-zero
+    values are foreground sites. The CUDA implementation supports 1D through
+    16D spatial inputs.
 
     Args:
-        input: Binary input tensor (0 = background, non-zero = foreground).
-               Must be in (B, C, H, W) or (B, C, D, H, W) format for batch processing,
-               or (H, W) / (D, H, W) for single images.
-        metric: Distance metric to use:
-                - "chessboard": L-infinity norm (default). Also known as Chebyshev distance.
-                - "taxicab": L1 norm. Also known as Manhattan or city-block distance.
-                - "cityblock": Alias for "taxicab".
-                - "manhattan": Alias for "taxicab".
-        return_distances: Whether to calculate the distance transform. Default is True.
-        return_indices: Whether to calculate the feature transform (indices of closest
-                        background element). Default is False.
-        distances: Optional output tensor for distances. If provided, must have
-                   the same shape as input. If None and return_distances is True,
-                   a new tensor will be created.
-        indices: Optional output tensor for indices. If provided, must have shape
-                 (..., ndim) where ... matches input shape. If None and return_indices
-                 is True, a new tensor will be created.
+        input (torch.Tensor): CUDA tensor with shape ``(B, C, *spatial)`` and at
+            least one spatial dimension.
+        metric (str): Chamfer metric. ``"chessboard"`` computes L-infinity /
+            Chebyshev distance. ``"taxicab"`` computes L1 / Manhattan distance.
+            ``"cityblock"`` and ``"manhattan"`` are aliases for ``"taxicab"``.
+        return_distances (bool): Whether to compute distance values.
+        return_indices (bool): Whether to compute nearest-background coordinates.
+        distances (Optional[torch.Tensor]): Optional preallocated distance
+            output with the same shape as ``input``.
+        indices (Optional[torch.Tensor]): Optional preallocated index output
+            with shape ``(spatial_ndim, *input.shape)``.
 
     Returns:
-        Depending on return_distances, return_indices, and whether output tensors
-        are provided:
-            - Returns distance tensor only when return_distances=True and distances=None
-            - Returns indices tensor only when return_indices=True and indices=None
-            - Returns tuple of (distances, indices) when both conditions above are met
-            - Returns None if output tensors are provided for all requested outputs
+        torch.Tensor | tuple[torch.Tensor, torch.Tensor] | None: Requested
+        outputs that were not supplied through ``distances`` or ``indices``.
+        Distances have shape ``input.shape`` and indices have shape
+        ``(spatial_ndim, *input.shape)``.
 
-    Example:
+    Examples:
+        ```pycon
+        >>> import torch
         >>> import torchmorph as tm
-        >>> # 2D image with batch: (B, C, H, W)
-        >>> x = torch.zeros(1, 1, 64, 64, device='cuda')
-        >>> x[0, 0, 10:20, 10:20] = 1
-        >>> dist = tm.chamfer_distance_transform(x)  # chessboard by default
-        >>> dist = tm.chamfer_distance_transform(x, metric='taxicab')
-        >>> dist, indices = tm.chamfer_distance_transform(x, return_indices=True)
-        >>> # Using pre-allocated output tensors
-        >>> dist_out = torch.empty_like(x)
-        >>> tm.chamfer_distance_transform(x, distances=dist_out)  # Returns None, fills dist_out
+        >>> x = torch.zeros(1, 1, 5, 5, 5, device="cuda")
+        >>> x[..., 2, 2, 2] = 1
+        >>> dist = tm.chamfer_distance_transform(x, metric="chessboard")
+        >>> dist.shape
+        torch.Size([1, 1, 5, 5, 5])
+        >>> dist, idx = tm.chamfer_distance_transform(x, metric="taxicab", return_indices=True)
+        >>> idx.shape
+        torch.Size([3, 1, 1, 5, 5, 5])
+        ```
     """
     if not input.is_cuda:
         raise ValueError("Input tensor must be on CUDA device.")
@@ -271,46 +264,55 @@ def brute_force_distance_transform(
     distances: Optional[torch.Tensor] = None,
     indices: Optional[torch.Tensor] = None,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor], None]:
-    """Brute-force distance transform.
+    """Compute the brute-force distance transform of an N-dimensional binary tensor
 
-    Calculates the distance transform of the input using a brute-force algorithm.
-    The algorithm computes the distance from each foreground pixel to ALL
-    background pixels and finds the minimum. This is $O(N*M)$ where $N$ is
-    number of foreground pixels and $M$ is number of background pixels.
+    The input is treated as ``(B, C, *spatial)`` and each batch/channel slice is
+    processed independently. For every foreground site, the kernel compares all
+    background sites and writes the minimum distance. The CUDA template dispatch
+    supports 1D through 8D spatial inputs.
 
     Args:
-        input: Binary input tensor (0 = background, non-zero = foreground).
-               Must be in (B, C, Spatial...) format.
-        metric: Distance metric to use:
-                - "euclidean": L2 norm (default).
-                - "taxicab": L1 norm (Manhattan distance).
-                - "chessboard": L-infinity norm (Chebyshev distance).
-        sampling: Spacing of elements along each spatial dimension. If a single
-                  number, the spacing is uniform in all spatial dimensions. If a
-                  sequence, it must match the number of spatial dimensions.
-                  Default is None (unit spacing for all spatial dimensions).
-        return_distances: Whether to calculate the distance transform.
-                          Default is True.
-        return_indices: Whether to calculate the feature transform (indices
-                        of closest background element). Default is False.
-        distances: Optional output tensor for distances. If provided, must have
-                   the same shape as input.
-        indices: Optional output tensor for indices. If provided, must have shape
-                 (spatial_ndim, ...) where ... matches input shape.
+        input (torch.Tensor): CUDA tensor with shape ``(B, C, *spatial)`` and at
+            least one spatial dimension.
+        metric (str): Distance metric. ``"euclidean"`` computes L2 distance,
+            ``"taxicab"`` computes L1 / Manhattan distance, and
+            ``"chessboard"`` computes L-infinity / Chebyshev distance.
+        sampling (Optional[float | Sequence[float]]): Physical spacing for the
+            spatial dimensions. ``None`` uses unit spacing, a scalar is
+            broadcast to all spatial dimensions, and a sequence must have either
+            one value or one value per spatial dimension.
+        return_distances (bool): Whether to compute distance values.
+        return_indices (bool): Whether to compute nearest-background coordinates.
+        distances (Optional[torch.Tensor]): Optional preallocated distance
+            output with the same shape as ``input``.
+        indices (Optional[torch.Tensor]): Optional preallocated index output
+            with shape ``(spatial_ndim, *input.shape)``.
 
     Returns:
-        Depending on return_distances, return_indices, and whether output tensors
-        are provided:
-            - Returns distance tensor only when return_distances=True and distances=None
-            - Returns indices tensor only when return_indices=True and indices=None
-            - Returns tuple of (distances, indices) when both conditions above are met
-            - Returns None if output tensors are provided for all requested outputs
+        torch.Tensor | tuple[torch.Tensor, torch.Tensor] | None: Requested
+        outputs that were not supplied through ``distances`` or ``indices``.
+        Distances have shape ``input.shape`` and indices have shape
+        ``(spatial_ndim, *input.shape)``.
+
+    Examples:
+        ```pycon
+        >>> import torch
+        >>> import torchmorph as tm
+        >>> x = torch.zeros(1, 1, 3, 3, 3, 3, device="cuda")
+        >>> x[..., 1, 1, 1, 1] = 1
+        >>> dist = tm.brute_force_distance_transform(x, metric="euclidean")
+        >>> dist.shape
+        torch.Size([1, 1, 3, 3, 3, 3])
+        >>> dist, idx = tm.brute_force_distance_transform(x, return_indices=True)
+        >>> idx.shape
+        torch.Size([4, 1, 1, 3, 3, 3, 3])
+        ```
     """
     if not input.is_cuda:
         raise ValueError("Input tensor must be on CUDA device.")
     if input.ndim < 3:
         raise ValueError(
-            f"Input must be (B, C, ) format with at least 3 dimensions, got {input.shape}."
+            f"Input must be (B, C, *spatial) format with at least 3 dimensions, got {input.shape}."
         )
     if input.numel() == 0:
         raise ValueError(f"Invalid input: empty tensor with shape {input.shape}.")

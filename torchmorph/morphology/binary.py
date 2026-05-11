@@ -121,10 +121,46 @@ def binary_erosion(
     border_value: bool = False,
     origin: int | tuple[int, ...] = 0,
 ) -> Tensor:
-    """
-    N-dimensional binary erosion for `(B, C, Spatial...)` tensors.
+    """Erode foreground regions in an N-dimensional binary tensor
 
-    For a single image or volume, add batch and channel dimensions first.
+    Treats non-zero input values as foreground and applies binary erosion to
+    each ``(B, C)`` sample independently. A foreground value survives only when
+    every active element of the structuring element overlaps foreground.
+
+    Args:
+        input (torch.Tensor): Tensor with shape ``(B, C, *spatial)``. Non-zero
+            values are treated as foreground.
+        structure (Optional[torch.Tensor]): Structuring element with one axis
+            per spatial dimension. Non-zero values are active. If ``None``, a
+            rank-matched connectivity-1 structure is generated.
+        iterations (int): Number of erosion passes. Values less than ``1`` run
+            until the result no longer changes.
+        mask (Optional[torch.Tensor]): Boolean mask that restricts which output
+            locations may change. Use the same ``(B, C, *spatial)`` layout as
+            ``input``.
+        output (Optional[torch.Tensor]): Optional tensor to fill in-place with
+            the boolean result. The same tensor is returned.
+        border_value (bool): Value assumed outside the spatial boundary.
+        origin (int | tuple[int, ...]): Structuring-element origin offset. A
+            scalar is applied to every spatial dimension; a tuple must match the
+            number of spatial dimensions.
+
+    Returns:
+        torch.Tensor: Boolean tensor with the same shape as ``input``.
+
+    Examples:
+        ```pycon
+        >>> import torch
+        >>> import torchmorph as tm
+        >>> x = torch.ones(1, 1, 5, 5)
+        >>> x[0, 0, 0, :] = 0
+        >>> tm.binary_erosion(x).to(torch.int32)[0, 0]
+        tensor([[0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0],
+                [0, 1, 1, 1, 0],
+                [0, 1, 1, 1, 0],
+                [0, 0, 0, 0, 0]], dtype=torch.int32)
+        ```
     """
     return _binary_morphology(
         input=input,
@@ -147,7 +183,47 @@ def binary_dilation(
     border_value: bool = False,
     origin: int | tuple[int, ...] = 0,
 ) -> Tensor:
-    """binary dilation for `(B, C, Spatial...)` tensors."""
+    """Dilate foreground regions in an N-dimensional binary tensor
+
+    Treats non-zero input values as foreground and applies binary dilation to
+    each ``(B, C)`` sample independently. A location becomes foreground when any
+    active element of the structuring element overlaps foreground.
+
+    Args:
+        input (torch.Tensor): Tensor with shape ``(B, C, *spatial)``. Non-zero
+            values are treated as foreground.
+        structure (Optional[torch.Tensor]): Structuring element with one axis
+            per spatial dimension. Non-zero values are active. If ``None``, a
+            rank-matched connectivity-1 structure is generated.
+        iterations (int): Number of dilation passes. Values less than ``1`` run
+            until the result no longer changes.
+        mask (Optional[torch.Tensor]): Boolean mask that restricts which output
+            locations may change. Use the same ``(B, C, *spatial)`` layout as
+            ``input``.
+        output (Optional[torch.Tensor]): Optional tensor to fill in-place with
+            the boolean result. The same tensor is returned.
+        border_value (bool): Value assumed outside the spatial boundary.
+        origin (int | tuple[int, ...]): Structuring-element origin offset. A
+            scalar is applied to every spatial dimension; a tuple must match the
+            number of spatial dimensions.
+
+    Returns:
+        torch.Tensor: Boolean tensor with the same shape as ``input``.
+
+    Examples:
+        ```pycon
+        >>> import torch
+        >>> import torchmorph as tm
+        >>> x = torch.zeros(1, 1, 5, 5)
+        >>> x[0, 0, 2, 2] = 1
+        >>> tm.binary_dilation(x).to(torch.int32)[0, 0]
+        tensor([[0, 0, 0, 0, 0],
+                [0, 0, 1, 0, 0],
+                [0, 1, 1, 1, 0],
+                [0, 0, 1, 0, 0],
+                [0, 0, 0, 0, 0]], dtype=torch.int32)
+        ```
+    """
     return _binary_morphology(
         input,
         structure,
@@ -169,7 +245,44 @@ def binary_opening(
     border_value: bool = False,
     origin: int | tuple[int, ...] = 0,
 ) -> Tensor:
-    """binary opening for '(B, C, ...)' Tensors ."""
+    """Remove small foreground components with binary opening
+
+    Opening is erosion followed by dilation using the same structuring element.
+    The operation is applied independently to each ``(B, C)`` sample of an
+    ``(B, C, *spatial)`` tensor.
+
+    Args:
+        input (torch.Tensor): Tensor with shape ``(B, C, *spatial)``. Non-zero
+            values are treated as foreground.
+        structure (Optional[torch.Tensor]): Structuring element with one axis
+            per spatial dimension. If ``None``, a rank-matched connectivity-1
+            structure is generated.
+        iterations (int): Number of erosions followed by the same number of
+            dilations. Values less than ``1`` run each stage until convergence.
+        mask (Optional[torch.Tensor]): Boolean mask in the same
+            ``(B, C, *spatial)`` layout restricting which locations may change.
+        output (Optional[torch.Tensor]): Optional tensor to fill in-place.
+        border_value (bool): Value assumed outside the spatial boundary.
+        origin (int | tuple[int, ...]): Structuring-element origin offset.
+
+    Returns:
+        torch.Tensor: Boolean tensor with the same shape as ``input``.
+
+    Examples:
+        ```pycon
+        >>> import torch
+        >>> import torchmorph as tm
+        >>> x = torch.zeros(1, 1, 5, 5)
+        >>> x[0, 0, 1:4, 1:4] = 1
+        >>> x[0, 0, 0, 0] = 1
+        >>> tm.binary_opening(x).to(torch.int32)[0, 0]
+        tensor([[0, 0, 0, 0, 0],
+                [0, 0, 1, 0, 0],
+                [0, 1, 1, 1, 0],
+                [0, 0, 1, 0, 0],
+                [0, 0, 0, 0, 0]], dtype=torch.int32)
+        ```
+    """
     x = binary_erosion(
         input,
         structure,
@@ -200,7 +313,43 @@ def binary_closing(
     border_value: bool = False,
     origin: int | tuple[int, ...] = 0,
 ) -> Tensor:
-    """binary closing for (B, C, ...) Tensors."""
+    """Fill small background gaps with binary closing
+
+    Closing is dilation followed by erosion using the same structuring element.
+    The operation is applied independently to each ``(B, C)`` sample of an
+    ``(B, C, *spatial)`` tensor.
+
+    Args:
+        input (torch.Tensor): Tensor with shape ``(B, C, *spatial)``. Non-zero
+            values are treated as foreground.
+        structure (Optional[torch.Tensor]): Structuring element with one axis
+            per spatial dimension. If ``None``, a rank-matched connectivity-1
+            structure is generated.
+        iterations (int): Number of dilations followed by the same number of
+            erosions. Values less than ``1`` run each stage until convergence.
+        mask (Optional[torch.Tensor]): Boolean mask in the same
+            ``(B, C, *spatial)`` layout restricting which locations may change.
+        output (Optional[torch.Tensor]): Optional tensor to fill in-place.
+        border_value (bool): Value assumed outside the spatial boundary.
+        origin (int | tuple[int, ...]): Structuring-element origin offset.
+
+    Returns:
+        torch.Tensor: Boolean tensor with the same shape as ``input``.
+
+    Examples:
+        ```pycon
+        >>> import torch
+        >>> import torchmorph as tm
+        >>> x = torch.ones(1, 1, 5, 5)
+        >>> x[0, 0, 2, 2] = 0
+        >>> tm.binary_closing(x, border_value=True).to(torch.int32)[0, 0]
+        tensor([[1, 1, 1, 1, 1],
+                [1, 1, 1, 1, 1],
+                [1, 1, 1, 1, 1],
+                [1, 1, 1, 1, 1],
+                [1, 1, 1, 1, 1]], dtype=torch.int32)
+        ```
+    """
     x = binary_dilation(
         input,
         structure,
