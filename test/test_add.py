@@ -18,4 +18,4 @@ def test_add():
     torch.testing.assert_close(y, expected)
     assert y.device.type == "cuda"
     assert y.shape == x.shape
-    print("tm.bar test passed ✅")
+    print("tm.add test passed ✅")
