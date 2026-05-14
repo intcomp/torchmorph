@@ -38,6 +38,18 @@ std::tuple<torch::Tensor, torch::Tensor> sinkhorn_fastiter(
     int N
 );
 
+std::tuple<torch::Tensor, torch::Tensor> sinkhorn_logiter(
+    const torch::Tensor log_a,
+    const torch::Tensor log_b,
+    const torch::Tensor M,
+    torch::Tensor log_u,
+    torch::Tensor log_v,
+    int itrstep,
+    int N,
+    float reg
+);
+
+
 
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -76,6 +88,17 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           py::arg("v"),
           py::arg("itrstep"),
           py::arg("N"));
-}
 
+    m.def("sinkhorn_logiter", &sinkhorn_logiter,
+          "Sinkhorn Log-Domain Iteration CUDA",
+          py::arg("log_a"),
+          py::arg("log_b"),
+          py::arg("M"),
+          py::arg("log_u"),
+          py::arg("log_v"),
+          py::arg("itrstep"),
+          py::arg("N"),
+          py::arg("reg")
+    );
+}
 

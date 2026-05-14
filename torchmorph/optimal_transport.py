@@ -71,7 +71,7 @@ def data_preprocess(
     return source, target, cost_matrix
 
 
-def sinkhorn_balanced_full(
+def sinkhorn_balanced(
     source: Tensor,
     target: Tensor,
     cost_matrix: Optional[Tensor] = None,
@@ -190,7 +190,7 @@ def sinkhorn_balanced_batch(
         return {"plan": P}
 
 
-def sinkhorn_balanced(
+def sinkhorn_balanced_nobatch(
     source: Tensor,  # (N,)
     target: Tensor,  # (N,)
     cost_matrix: Tensor,
@@ -274,3 +274,27 @@ def sinkhorn_balanced_cuda(
         return {"plan": P, "u": u, "v": v}
     else:
         return {"plan": P}
+
+
+def sinkhorn_balanced_log(
+    source: Tensor,
+    target: Tensor,
+    cost_matrix: Tensor,
+    reg: float = 1.0,
+    itrstep: int = 100,
+    dtype=torch.float32,
+):
+    from torchmorph import _C
+
+    source = source.to(dtype=dtype).log()
+    target = target.to(dtype=dtype).log()
+    N = source.shape[-1]
+    u = torch.zeros_like(source)
+    v = torch.zeros_like(target)
+
+    u, v = _C.sinkhorn_logiter(source, target, cost_matrix, u, v, int(itrstep), int(N), float(reg))
+
+    u = u.exp()
+    v = v.exp()
+
+    return u, v

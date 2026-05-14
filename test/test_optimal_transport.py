@@ -160,7 +160,48 @@ def test_sinkhorn_cuda():
     assert relative_error < 1e-4
 
 
+def test_sinkhorn_log():
+    if not torch.cuda.is_available():
+        raise ValueError("CUDA not available, skipping CUDA test.")
+
+    device = 'cuda'
+    # Create two random distributions
+    torch.manual_seed(42)
+    source = torch.rand(2, 2, device=device)
+    target = torch.rand(2, 2, device=device)
+
+    print("\n--- Input source ---")
+    print(source)
+    print("\n--- Input target ---")
+    print(target)
+
+    source, target, cost_matrix = tr.data_preprocess(source, target, device=device)
+
+    u, v = tr.sinkhorn_balanced_log(
+        source=source,
+        target=target,
+        cost_matrix=cost_matrix,
+        reg=0.02,
+        itrstep=100,
+    )
+
+    print("\n--- Output u (log-domain) ---")
+    print(u)
+    print("\n--- Output v (log-domain) ---")
+    print(v)
+
+    return u, v
+
+
+def test_allclose(u1, v1, u2, v2):
+    u_close = torch.allclose(u1, u2, atol=1e-4)
+    v_close = torch.allclose(v1, v2, atol=1e-4)
+    print(f"u close: {u_close}, v close: {v_close}")
+    assert u_close and v_close, "u or v not close enough"
+
+
 if __name__ == "__main__":
-    test_sinkhorn_balanced_print()
-    test_build_cost_matrix()
-    test_sinkhorn_cuda()
+    # test_sinkhorn_balanced_print()
+    # test_build_cost_matrix()
+    test_sinkhorn_log()
+    # test_sinkhorn_cuda()

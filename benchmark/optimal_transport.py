@@ -26,12 +26,11 @@ def run_sinkhorn_balanced_benchmark(
 ):
     # Set parameters
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.float32
     torch.manual_seed(42)
 
     # Prepare input data
-    source = torch.rand(B, C, H, W, device=device, dtype=dtype)
-    target = torch.rand(B, C, H, W, device=device, dtype=dtype)
+    source = torch.rand(B, C, H, W, device=device, dtype=torch.float32)
+    target = torch.rand(B, C, H, W, device=device, dtype=torch.float32)
     source = source / source.sum()
     target = target / target.sum()
     cost_matrix = tr.build_cost_matrix((H, W), device=device, p=2)
@@ -192,28 +191,12 @@ def batch_channel_sinkhorn_balanced_benchmark():
 
 
 if __name__ == "__main__":
-    # sizes=[10,20,50,100]
-    # for size in sizes:
-    #     i = 0
-    #     result_sinkhorn_balanced[] = run_sinkhorn_balanced_benchmark(B=1, C=1, H=size, W=size)
-    #     result_ot[] = run_ot_sinkhorn_benchmark(H=size, W=size)
-    #     i += 1
-    # result_large_scale = large_scale_sinkhorn_balanced_benchmark()
-    # result_batch_channel = batch_channel_sinkhorn_balanced_benchmark()
-
-    # print(result_sinkhorn_balanced)
-    # print(result_ot)
-    # speedup = result_ot.mean / result_sinkhorn_balanced.mean
-    # print(f"My sinkhorn to OT sinkhorn Speedup: {speedup:.1f}x")
-    # print(result_large_scale)
-    # print(result_batch_channel)
-
-    print_size_benchmark = False
-    print_lambda_benchmark = True
+    print_size_benchmark = True
+    print_lambda_benchmark = False
 
     if print_size_benchmark:
         # sizes = [16, 32, 64, 100]
-        sizes = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+        sizes = [100]
         result_sinkhorn_balanced = []
         result_ot = []
         result_lambda = []
