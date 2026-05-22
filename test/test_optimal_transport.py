@@ -95,16 +95,18 @@ def test_sinkhorn_balanced_print():
 
     print("\n--- Calling sinkhorn_balanced ---")
     try:
-        P = tr.sinkhorn_balanced_full(
-            source,
-            target,
-            cost_matrix=None,
+        solver = tr.SinkhornSolver(
             reg=0.1,
             itrstep=100,
             threshold=1e-5,
-            returngrad=False,
             device=device,
             p=2,
+        )
+        P = solver.sinkhorn(
+            source,
+            target,
+            cost_matrix=None,
+            returngrad=False,
         )
         print("\n--- Output P (transport plan) shape ---")
         print(P.shape)
@@ -134,26 +136,25 @@ def test_sinkhorn_cuda():
     print("\n--- Input target ---")
     print(target)
 
-    source, target, cost_matrix = tr.data_preprocess(source, target, device=device)
+    solver = tr.SinkhornSolver(reg=0.02, itrstep=100, device=device)
+    source, target, cost_matrix, _ = solver.data_preprocess(source, target)
 
-    torch_result = tr.sinkhorn_balanced(
+    torch_result = solver.sinkhorn(
         source=source,
         target=target,
         cost_matrix=cost_matrix,
-        reg=0.02,
-        itrstep=100,
+        returngrad=True,
     )
 
-    cuda_result = tr.sinkhorn_balanced_cuda(
+    cuda_result = solver.sinkhorn_cuda(
         source=source,
         target=target,
         cost_matrix=cost_matrix,
-        reg=0.02,
-        itrstep=100,
     )
 
-    relative_error = torch.linalg.norm(cuda_result["plan"] - torch_result["plan"]) / torch.clamp(
-        torch.linalg.norm(torch_result["plan"]), min=1e-12
+    torch_plan = torch_result["plan"].squeeze(0).squeeze(0)
+    relative_error = torch.linalg.norm(cuda_result["plan"] - torch_plan) / torch.clamp(
+        torch.linalg.norm(torch_plan), min=1e-12
     )
 
     print(f"CUDA relative error: {relative_error.item():.4e}")
@@ -167,41 +168,77 @@ def test_sinkhorn_log():
     device = 'cuda'
     # Create two random distributions
     torch.manual_seed(42)
-    source = torch.rand(2, 2, device=device)
-    target = torch.rand(2, 2, device=device)
+    source = torch.rand(2, 2, device=device).abs()
+    target = torch.rand(2, 2, device=device).abs()
+
+    solver = tr.SinkhornSolver(reg=0.02, itrstep=100, device=device)
+    source, target, cost_matrix, cost_matrix_T = solver.data_preprocess(source, target)
 
     print("\n--- Input source ---")
     print(source)
     print("\n--- Input target ---")
     print(target)
 
-    source, target, cost_matrix = tr.data_preprocess(source, target, device=device)
-
-    u, v = tr.sinkhorn_balanced_log(
+    u, v = solver.sinkhorn_log_cuda(
         source=source,
         target=target,
         cost_matrix=cost_matrix,
-        reg=0.02,
-        itrstep=100,
+        cost_matrix_T=cost_matrix_T,
     )
 
-    print("\n--- Output u (log-domain) ---")
+    print("\n--- Output u  ---")
     print(u)
-    print("\n--- Output v (log-domain) ---")
+    print("\n--- Output v  ---")
     print(v)
 
-    return u, v
 
+def loss_test():
+    if not torch.cuda.is_available():
+        raise ValueError("CUDA not available, skipping loss test.")
 
-def test_allclose(u1, v1, u2, v2):
-    u_close = torch.allclose(u1, u2, atol=1e-4)
-    v_close = torch.allclose(v1, v2, atol=1e-4)
-    print(f"u close: {u_close}, v close: {v_close}")
-    assert u_close and v_close, "u or v not close enough"
+    device = "cuda"
+    torch.manual_seed(42)
+
+    reg = 5
+    itrstep = 100
+    solver = tr.SinkhornSolver(reg=reg, itrstep=itrstep, device=device)
+
+    source = torch.nn.Parameter(torch.randn(4, device=device).abs())
+    optimizer = torch.optim.Adam([source], lr=1e-2)
+
+    target = torch.rand(4, device=device).abs()
+
+    for step in range(500):
+        optimizer.zero_grad()
+
+        source_prob, target, cost_matrix, cost_matrix_T = solver.data_preprocess(source, target)
+
+        with torch.no_grad():
+            u, v = solver.sinkhorn_log_cuda(
+                source=source_prob.detach(),
+                target=target.detach(),
+                cost_matrix=cost_matrix,
+                cost_matrix_T=cost_matrix_T,
+            )
+
+            K = torch.exp(-cost_matrix * reg)
+            P = u.unsqueeze(-1) * K * v.unsqueeze(-2)
+            loss_value = (P * cost_matrix).sum()
+
+            grad_source, _ = solver.gradient(u, v)
+
+        source_prob.backward(grad_source)
+
+        optimizer.step()
+
+        print(f"step {step}, loss = {loss_value.item():.6f}")
+        print("source:", source.detach())
+        print("target:", target)
 
 
 if __name__ == "__main__":
-    # test_sinkhorn_balanced_print()
-    # test_build_cost_matrix()
+    test_sinkhorn_balanced_print()
+    test_build_cost_matrix()
     test_sinkhorn_log()
-    # test_sinkhorn_cuda()
+    test_sinkhorn_cuda()
+    loss_test()

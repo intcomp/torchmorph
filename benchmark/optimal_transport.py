@@ -21,9 +21,10 @@ def run_sinkhorn_balanced_benchmark(
     H: int = 32,
     W: int = 32,
     myreg: float = 0.02,
-    itrstep: int = 0,
-    threshold: float = 1e-5,
+    itrstep: int = 100,
+    threshold: float = 0,
 ):
+    torch.cuda.reset_peak_memory_stats()
     # Set parameters
     device = "cuda" if torch.cuda.is_available() else "cpu"
     torch.manual_seed(42)
@@ -35,34 +36,41 @@ def run_sinkhorn_balanced_benchmark(
     target = target / target.sum()
     cost_matrix = tr.build_cost_matrix((H, W), device=device, p=2)
 
-    source, target, cost_matrix = tr.data_preprocess(
-        source, target, cost_matrix=cost_matrix, p=2, device=device
+    solver = tr.SinkhornSolver(
+        reg=myreg,
+        itrstep=itrstep,
+        threshold=threshold,
+        p=2,
+        device=device,
     )
+    source, target, cost_matrix, _ = solver.data_preprocess(source, target, cost_matrix=cost_matrix)
 
     globals_dict = {
-        "tr": tr,
+        "solver": solver,
         "source": source,
         "target": target,
-        "myreg": myreg,
         "cost_matrix": cost_matrix,
-        "itrstep": itrstep,
-        "threshold": threshold,
     }
 
-    stmt = (
-        "tr.sinkhorn_balanced_batch(source, target, cost_matrix=cost_matrix, "
-        "reg=myreg, itrstep=itrstep, threshold=threshold)"
-    )
+    stmt = "solver.sinkhorn_batch(source, target, cost_matrix=cost_matrix)"
 
     timer = benchmark.Timer(stmt=stmt, globals=globals_dict)
     # result_sinkhorn_balanced = timer.blocked_autorange(min_run_time=1)
     # number_of_runs = 100
-    result_sinkhorn_balanced = timer.blocked_autorange(min_run_time=2)
+    result_sinkhorn_balanced = timer.blocked_autorange(min_run_time=3)
+
+    peak_allocated = torch.cuda.max_memory_allocated()
+    peak_reserved = torch.cuda.max_memory_reserved()
+
+    print(f"peak allocated: {peak_allocated / 1024**2:.2f} MB")
+    print(f"peak reserved:   {peak_reserved / 1024**2:.2f} MB")
+
     return result_sinkhorn_balanced
 
 
 def run_ot_sinkhorn_benchmark(H: int = 32, W: int = 32, myreg: float = 0.02):
     # Set parameters
+    import ot
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = torch.float32
@@ -106,18 +114,22 @@ def run_sinkhorn_relative_error(H: int = 32, W: int = 32, myreg: float = 0.02):
     target = target / target.sum()
     cost_matrix = tr.build_cost_matrix((H, W), device=device, p=2)
 
-    source_preprocessed, target_preprocessed, cost_matrix = tr.data_preprocess(
-        source, target, cost_matrix=cost_matrix, p=2, device=device
+    solver = tr.SinkhornSolver(
+        reg=myreg,
+        itrstep=100,
+        threshold=1e-5,
+        p=2,
+        device=device,
+    )
+    source_preprocessed, target_preprocessed, cost_matrix, _ = solver.data_preprocess(
+        source, target, cost_matrix=cost_matrix
     )
 
     sinkhorn_plan = (
-        tr.sinkhorn_balanced_batch(
+        solver.sinkhorn_batch(
             source_preprocessed,
             target_preprocessed,
             cost_matrix=cost_matrix,
-            reg=myreg,
-            itrstep=100,
-            threshold=1e-5,
         )["plan"]
         .squeeze(0)
         .squeeze(0)
@@ -147,14 +159,20 @@ def large_scale_sinkhorn_balanced_benchmark(B: int = 1, C: int = 1, H: int = 128
     target = torch.rand(B, C, H, W, device=device, dtype=dtype)
     source = source / source.sum()
     target = target / target.sum()
+    solver = tr.SinkhornSolver(
+        reg=25.0,
+        itrstep=100,
+        threshold=1e-5,
+        device=device,
+    )
 
     globals_dict = {
-        "tr": tr,
+        "solver": solver,
         "source": source,
         "target": target,
     }
 
-    stmt = "tr.sinkhorn_balanced_full(source, target, reg=25.0, itrstep=100, threshold=1e-5)"
+    stmt = "solver.sinkhorn(source, target)"
 
     timer = benchmark.Timer(stmt=stmt, globals=globals_dict)
     # result_sinkhorn_balanced = timer.blocked_autorange(min_run_time=1)
@@ -174,14 +192,20 @@ def batch_channel_sinkhorn_balanced_benchmark():
     target = torch.rand(B, C, H, W, device=device, dtype=dtype)
     source = source / source.sum()
     target = target / target.sum()
+    solver = tr.SinkhornSolver(
+        reg=25.0,
+        itrstep=100,
+        threshold=1e-5,
+        device=device,
+    )
 
     globals_dict = {
-        "tr": tr,
+        "solver": solver,
         "source": source,
         "target": target,
     }
 
-    stmt = "tr.sinkhorn_balanced_full(source, target, reg=25.0, itrstep=100, threshold=1e-5)"
+    stmt = "solver.sinkhorn(source, target)"
 
     timer = benchmark.Timer(stmt=stmt, globals=globals_dict)
     # result_sinkhorn_balanced = timer.blocked_autorange(min_run_time=1)
@@ -190,69 +214,213 @@ def batch_channel_sinkhorn_balanced_benchmark():
     return result_sinkhorn_balanced
 
 
-if __name__ == "__main__":
-    print_size_benchmark = True
-    print_lambda_benchmark = False
+def run_sinkhorn_log_benchmark(
+    H: int = 32,
+    W: int = 32,
+    myreg: float = 0.02,
+    itrstep: int = 100,
+):
+    torch.cuda.reset_peak_memory_stats()
+    # Set parameters
+    if not torch.cuda.is_available():
+        raise ValueError("CUDA device not available.")
 
-    if print_size_benchmark:
-        # sizes = [16, 32, 64, 100]
-        sizes = [100]
-        result_sinkhorn_balanced = []
-        result_ot = []
-        result_lambda = []
-        result_relative_error = []
+    device = "cuda"
+    torch.manual_seed(42)
 
-        for size in sizes:
-            sinkhorn_result = run_sinkhorn_balanced_benchmark(B=1, C=1, H=size, W=size)
-            ot_result = run_ot_sinkhorn_benchmark(H=size, W=size)
-            lambda_result = run_sinkhorn_balanced_benchmark(B=1, C=1, H=size, W=size, myreg=0.01)
-            relative_error = run_sinkhorn_relative_error(H=size, W=size)
-            result_sinkhorn_balanced.append(sinkhorn_result)
-            result_ot.append(ot_result)
-            result_lambda.append(lambda_result)
-            result_relative_error.append(relative_error)
+    # Prepare input data
+    source = torch.rand(H, W, device=device, dtype=torch.float32)
+    target = torch.rand(H, W, device=device, dtype=torch.float32)
+    cost_matrix = tr.build_cost_matrix((H, W), device=device, p=2)
 
+    solver = tr.SinkhornSolver(reg=myreg, itrstep=itrstep, p=2, device=device)
+    source, target, cost_matrix, cost_matrix_T = solver.data_preprocess(
+        source, target, cost_matrix=cost_matrix
+    )
+
+    globals_dict = {
+        "solver": solver,
+        "source": source,
+        "target": target,
+        "cost_matrix": cost_matrix,
+        "cost_matrix_T": cost_matrix_T,
+    }
+
+    stmt = "solver.sinkhorn_log_cuda(source, target, cost_matrix, cost_matrix_T)"
+
+    timer = benchmark.Timer(stmt=stmt, globals=globals_dict)
+    result_sinkhorn_log = timer.blocked_autorange(min_run_time=3)
+
+    peak_allocated = torch.cuda.max_memory_allocated()
+    peak_reserved = torch.cuda.max_memory_reserved()
+
+    print(f"peak allocated: {peak_allocated / 1024**2:.2f} MB")
+    print(f"peak reserved:   {peak_reserved / 1024**2:.2f} MB")
+
+    return result_sinkhorn_log
+
+
+def run_sinkhorn_cuda_benchmark(
+    H: int = 32,
+    W: int = 32,
+    myreg: float = 0.02,
+    itrstep: int = 100,
+):
+    torch.cuda.reset_peak_memory_stats()
+    # Set parameters
+    if not torch.cuda.is_available():
+        raise ValueError("CUDA device not available.")
+
+    device = "cuda"
+    torch.manual_seed(42)
+
+    # Prepare input data
+    source = torch.rand(H, W, device=device, dtype=torch.float32)
+    target = torch.rand(H, W, device=device, dtype=torch.float32)
+    cost_matrix = tr.build_cost_matrix((H, W), device=device, p=2)
+
+    solver = tr.SinkhornSolver(reg=myreg, itrstep=itrstep, p=2, device=device)
+    source, target, cost_matrix, _ = solver.data_preprocess(source, target, cost_matrix=cost_matrix)
+
+    globals_dict = {
+        "solver": solver,
+        "source": source,
+        "target": target,
+        "cost_matrix": cost_matrix,
+    }
+
+    stmt = "solver.sinkhorn_cuda(source, target, cost_matrix=cost_matrix)"
+
+    timer = benchmark.Timer(stmt=stmt, globals=globals_dict)
+    result_sinkhorn_cuda = timer.blocked_autorange(min_run_time=3)
+
+    peak_allocated = torch.cuda.max_memory_allocated()
+    peak_reserved = torch.cuda.max_memory_reserved()
+
+    print(f"peak allocated: {peak_allocated / 1024**2:.2f} MB")
+    print(f"peak reserved:   {peak_reserved / 1024**2:.2f} MB")
+
+    return result_sinkhorn_cuda
+
+
+def reference_error_check(
+    size: int = 32, myreg: float = 0.1, itrstep: int = 200, verbose: bool = False
+):
+    if not torch.cuda.is_available():
+        raise ValueError("CUDA device not available.")
+
+    device = "cuda"
+    torch.manual_seed(2)
+
+    # Prepare input data
+    source = torch.rand(size, size, device=device, dtype=torch.float32)
+    target = torch.rand(size, size, device=device, dtype=torch.float32)
+    cost_matrix = tr.build_cost_matrix((size, size), device=device, p=2)
+
+    solver = tr.SinkhornSolver(reg=myreg, itrstep=itrstep, p=2, device=device)
+    source, target, cost_matrix, cost_matrix_T = solver.data_preprocess(
+        source, target, cost_matrix=cost_matrix
+    )
+
+    _, log = ot.bregman.sinkhorn_log(
+        source,
+        target,
+        cost_matrix,
+        reg=1 / myreg,
+        numItermax=itrstep,
+        stopThr=0,
+        log=True,
+    )
+
+    u, v = solver.sinkhorn_log_cuda(
+        source,
+        target,
+        cost_matrix,
+        cost_matrix_T,
+    )
+
+    grad_f, grad_g = solver.gradient(u, v)
+
+    log_u = log["log_u"]
+    log_v = log["log_v"]
+
+    f = log_u / myreg
+    g = log_v / myreg
+    f = f - f.mean()
+    g = g - g.mean()
+
+    if verbose:
+        print(f)
+        print(g)
+        print(grad_f)
+        print(grad_g)
+
+    f_abs_error = (f - grad_f).abs()
+    g_abs_error = (g - grad_g).abs()
+    f_rel_l2 = torch.linalg.norm(f - grad_f) / torch.clamp(torch.linalg.norm(f), min=1e-12)
+    g_rel_l2 = torch.linalg.norm(g - grad_g) / torch.clamp(torch.linalg.norm(g), min=1e-12)
+
+    return {
+        "size": size,
+        "points": size * size,
+        "reg": myreg,
+        "itrstep": itrstep,
+        "f_grad_max_abs": f_abs_error.max().item(),
+        "f_grad_mean_abs": f_abs_error.mean().item(),
+        "f_grad_rel_l2": f_rel_l2.item(),
+        "g_grad_max_abs": g_abs_error.max().item(),
+        "g_grad_mean_abs": g_abs_error.mean().item(),
+        "g_grad_rel_l2": g_rel_l2.item(),
+        "f_allclose": torch.allclose(f, grad_f, rtol=1e-4, atol=1e-4),
+        "g_allclose": torch.allclose(g, grad_g, rtol=1e-4, atol=1e-4),
+    }
+
+
+def print_reference_error_table(
+    sizes=(2, 4, 8, 16, 32, 64),
+    itrsteps=(100, 200, 500),
+    myreg: float = 0.1,
+):
+    """Print a size and iteration sweep for POT-vs-CUDA gradient error."""
+    rows = [
+        reference_error_check(size=size, myreg=myreg, itrstep=itrstep)
+        for size in sizes
+        for itrstep in itrsteps
+    ]
+
+    headers = (
+        "size",
+        "N",
+        "reg",
+        "itr",
+        "f_max",
+        "f_mean",
+        "f_rel_l2",
+        "g_max",
+        "g_mean",
+        "g_rel_l2",
+        "close",
+    )
+    print("| " + " | ".join(headers) + " |")
+    print("| " + " | ".join(["---"] * len(headers)) + " |")
+    for row in rows:
+        close = f"{row['f_allclose']}/{row['g_allclose']}"
         print(
-            "size,my_sinkhorn_ms,ot_sinkhorn_ms,lambda_100_sinkhorn_ms,"
-            "ot_speedup,lambda_100_vs_lambda_50,plan_relative_error"
+            f"| {row['size']}x{row['size']} "
+            f"| {row['points']} "
+            f"| {row['reg']:.3g} "
+            f"| {row['itrstep']} "
+            f"| {row['f_grad_max_abs']:.3e} "
+            f"| {row['f_grad_mean_abs']:.3e} "
+            f"| {row['f_grad_rel_l2']:.3e} "
+            f"| {row['g_grad_max_abs']:.3e} "
+            f"| {row['g_grad_mean_abs']:.3e} "
+            f"| {row['g_grad_rel_l2']:.3e} "
+            f"| {close} |"
         )
-        for size, sinkhorn_result, ot_result, lambda_result, relative_error in zip(
-            sizes, result_sinkhorn_balanced, result_ot, result_lambda, result_relative_error
-        ):
-            speedup = ot_result.mean / sinkhorn_result.mean
-            lambda_vs_default = lambda_result.mean / sinkhorn_result.mean
-            print(
-                f"{size}x{size},"
-                f"{sinkhorn_result.mean * 1000:.4f},"
-                f"{ot_result.mean * 1000:.4f},"
-                f"{lambda_result.mean * 1000:.4f},"
-                f"{speedup:.2f}x,"
-                f"{lambda_vs_default:.2f}x,"
-                f"{relative_error.item():.4e}"
-            )
 
-    if print_lambda_benchmark:
-        H, W = 64, 64
-        lambdas = [1, 1.5, 2, 5, 10, 25, 50, 100]
-        result_sinkhorn_balanced = []
+    return rows
 
-        for lambda_value in lambdas:
-            myreg = 1 / lambda_value
-            sinkhorn_result = run_sinkhorn_balanced_benchmark(
-                B=1, C=1, H=H, W=W, myreg=myreg, threshold=1e-5
-            )
-            result_sinkhorn_balanced.append(sinkhorn_result)
 
-        lambda_50_index = lambdas.index(50)
-        lambda_50_mean = result_sinkhorn_balanced[lambda_50_index].mean
-
-        print("lambda,myreg,size,my_sinkhorn_ms,vs_lambda_50")
-        for lambda_value, sinkhorn_result in zip(lambdas, result_sinkhorn_balanced):
-            vs_lambda_50 = sinkhorn_result.mean / lambda_50_mean
-            print(
-                f"{lambda_value},"
-                f"{1 / lambda_value:.4f},"
-                f"{H}x{W},"
-                f"{sinkhorn_result.mean * 1000:.4f},"
-                f"{vs_lambda_50:.2f}x"
-            )
+if __name__ == "__main__":
+    print_reference_error_table()

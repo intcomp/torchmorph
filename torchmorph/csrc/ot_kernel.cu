@@ -164,7 +164,7 @@ __global__ void u_update_log(
 
 __global__ void v_update_log(
     const float* log_b,
-    const float* M,
+    const float* M_T,
     const float* log_u,
     float* log_v,
     int N,
@@ -185,7 +185,7 @@ __global__ void v_update_log(
 
     //generate each log_kTu
     for (int j = tid; j < N; j += blk){
-        float log_k = - reg * M[bidx+j*N];
+        float log_k = - reg * M_T[bidx*N+j];
         if(local_max <= (log_k + log_u[j])){
             local_max = log_k + log_u[j];
         }     
@@ -208,7 +208,7 @@ __global__ void v_update_log(
 
     //log-domain iteration log_v = log_b - LSE(log_k+log_u)
     for (int j = tid; j < N; j += blk){
-        float log_k = - reg * M[bidx+j*N];
+        float log_k = - reg * M_T[bidx*N+j];
         local_sum += expf(log_k + log_u[j] - row_max);
     }
 
@@ -266,6 +266,7 @@ std::tuple<torch::Tensor, torch::Tensor> sinkhorn_logiter(
     const torch::Tensor log_a,
     const torch::Tensor log_b,
     const torch::Tensor M,
+    const torch::Tensor M_T,
     torch::Tensor log_u,
     torch::Tensor log_v,
     int itrstep,
@@ -287,7 +288,7 @@ std::tuple<torch::Tensor, torch::Tensor> sinkhorn_logiter(
         );
         v_update_log<<<blocks, threads, shared_memory>>>(
             log_b.data_ptr<float>(),
-            M.data_ptr<float>(),
+            M_T.data_ptr<float>(),
             log_u.data_ptr<float>(),
             log_v.data_ptr<float>(),
             N,
