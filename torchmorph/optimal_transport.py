@@ -335,6 +335,12 @@ class SinkhornSolver:
 
         return grad_source, grad_target
 
+    def _validate_single_cuda_distribution(self, source: Tensor, target: Tensor):
+        if source.ndim != 3 or target.ndim != 3:
+            raise ValueError("CUDA Sinkhorn inputs must be preprocessed to shape (B, C, N).")
+        if source.shape[:2] != (1, 1) or target.shape[:2] != (1, 1):
+            raise ValueError("CUDA Sinkhorn kernels currently support only B=C=1 inputs.")
+
     def sinkhorn_cuda(
         self,
         source: Tensor,
@@ -347,6 +353,7 @@ class SinkhornSolver:
         The CUDA kernel updates u and v, after which the Python wrapper
         reconstructs the transport plan from u, K, and v.
         """
+        self._validate_single_cuda_distribution(source, target)
         from torchmorph import _C
 
         N = source.shape[-1]
@@ -376,6 +383,7 @@ class SinkhornSolver:
         Inputs are converted to log probabilities for numerical stability.
         The returned u and v are exponentiated scaling vectors.
         """
+        self._validate_single_cuda_distribution(source, target)
         from torchmorph import _C
 
         with torch.no_grad():

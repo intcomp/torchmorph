@@ -207,6 +207,63 @@ def test_run_once_plan_matches_pot_sinkhorn_small():
     assert torch.allclose(out["plan"][0, 0], expected, rtol=5e-3, atol=1e-5)
 
 
+def test_run_once_cuda_matches_torch_backend_small():
+    _require_cuda()
+    device = "cuda"
+    solver = tr.SinkhornSolver(reg=0.7, itrstep=1000, threshold=0, device=device)
+
+    source = _make_positive((2, 2), device=device, seed=503)
+    target = _make_positive((2, 2), device=device, seed=607)
+
+    torch_out = solver.run_once(source, target, return_plan=True, return_distance=True)
+    cuda_out = solver.run_once(
+        source,
+        target,
+        use_cuda=True,
+        return_plan=True,
+        return_distance=True,
+    )
+
+    assert cuda_out["backend"] == "cuda"
+    assert torch.allclose(cuda_out["plan"], torch_out["plan"], rtol=1e-4, atol=1e-5)
+    assert torch.allclose(cuda_out["distance"], torch_out["distance"], rtol=1e-4, atol=1e-5)
+
+
+def test_run_once_log_domain_cuda_matches_torch_backend_small():
+    _require_cuda()
+    device = "cuda"
+    solver = tr.SinkhornSolver(reg=0.7, itrstep=1000, threshold=0, device=device)
+
+    source = _make_positive((2, 2), device=device, seed=701)
+    target = _make_positive((2, 2), device=device, seed=809)
+
+    torch_out = solver.run_once(source, target, return_plan=True, return_distance=True)
+    log_out = solver.run_once(
+        source,
+        target,
+        log_domain=True,
+        return_plan=True,
+        return_distance=True,
+    )
+
+    assert log_out["backend"] == "cuda_log"
+    assert torch.allclose(log_out["plan"], torch_out["plan"], rtol=1e-4, atol=1e-5)
+    assert torch.allclose(log_out["distance"], torch_out["distance"], rtol=1e-4, atol=1e-5)
+
+
+@pytest.mark.parametrize("kwargs", [{"use_cuda": True}, {"log_domain": True}])
+def test_cuda_backends_reject_batched_inputs(kwargs):
+    _require_cuda()
+    device = "cuda"
+    solver = tr.SinkhornSolver(reg=0.7, itrstep=300, threshold=0, device=device)
+
+    source = _make_positive((2, 1, 2, 2), device=device, seed=911)
+    target = _make_positive((2, 1, 2, 2), device=device, seed=919)
+
+    with pytest.raises(ValueError, match="B=C=1"):
+        solver.run_once(source, target, **kwargs)
+
+
 def test_gradient_matches_numeric_directional_derivative():
     _require_cuda()
     device = "cuda"
