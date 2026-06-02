@@ -108,6 +108,98 @@ class SinkhornSolver:
             return result
         return result["plan"]
 
+    def run_once(
+        self,
+        source: Tensor,
+        target: Tensor,
+        cost_matrix: Optional[Tensor] = None,
+        *,
+        use_cuda: bool = False,
+        log_domain: bool = False,
+        return_plan: bool = True,
+        return_uv: bool = False,
+        return_grad: bool = False,
+        return_distance: bool = False,
+        verbose: bool = False,
+        dtype=torch.float32,
+    ):
+        """Run the full Sinkhorn workflow from raw inputs.
+
+        This wrapper preprocesses raw source and target tensors, selects one
+        Sinkhorn backend, optionally reconstructs the transport plan, and
+        optionally returns the OT distance, dual-scaling vectors, or gradients.
+        """
+        source, target, cost_matrix, cost_matrix_T = self.data_preprocess(
+            source,
+            target,
+            cost_matrix=cost_matrix,
+            force_batched=True,
+            dtype=dtype,
+        )
+
+        need_uv = return_uv or return_grad or log_domain
+
+        if log_domain:
+            u, v = self.sinkhorn_log_cuda(
+                source=source,
+                target=target,
+                cost_matrix=cost_matrix,
+                cost_matrix_T=cost_matrix_T,
+                dtype=dtype,
+            )
+            backend = "cuda_log"
+            result = {"u": u, "v": v}
+        elif use_cuda:
+            result = self.sinkhorn_cuda(
+                source=source,
+                target=target,
+                cost_matrix=cost_matrix,
+                returnuv=need_uv,
+            )
+            backend = "cuda"
+        else:
+            result = self.sinkhorn_batch(
+                source=source,
+                target=target,
+                cost_matrix=cost_matrix,
+                returnuv=need_uv,
+                verbose=verbose,
+            )
+            backend = "torch"
+
+        output = {
+            "source": source,
+            "target": target,
+            "cost_matrix": cost_matrix,
+            "cost_matrix_T": cost_matrix_T,
+            "backend": backend,
+        }
+
+        plan = None
+        if return_plan or return_distance:
+            if "plan" in result:
+                plan = result["plan"]
+            else:
+                k = torch.exp(-cost_matrix * self.reg)
+                plan = result["u"].unsqueeze(-1) * k * result["v"].unsqueeze(-2)
+
+        if return_plan:
+            output["plan"] = plan
+
+        if return_distance:
+            output["distance"] = (plan * cost_matrix).sum(dim=(-2, -1))
+
+        if return_uv or return_grad:
+            output["u"] = result["u"]
+            output["v"] = result["v"]
+
+        if return_grad:
+            grad_source, grad_target = self.gradient(result["u"], result["v"])
+            output["grad_source"] = grad_source
+            output["grad_target"] = grad_target
+
+        return output
+
     def sinkhorn_batch(
         self,
         source: Tensor,  # (B,C,*Spatial)

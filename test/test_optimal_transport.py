@@ -1,7 +1,14 @@
 import importlib.util
 from pathlib import Path
 
+import numpy as np
+import pytest
 import torch
+
+try:
+    import ot
+except ImportError:  # pragma: no cover - exercised only when POT is absent
+    ot = None
 
 # Project root directory (parent of test)
 project_root = Path(__file__).parent.parent
@@ -13,6 +20,44 @@ module_path = project_root / "torchmorph" / "optimal_transport.py"
 spec = importlib.util.spec_from_file_location("optimal_transport", module_path)
 tr = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(tr)
+
+
+def _require_cuda():
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required for Sinkhorn tests")
+
+
+def _require_pot():
+    if ot is None:
+        pytest.skip("POT is required for baseline Sinkhorn tests")
+
+
+def _make_positive(shape, device, seed):
+    generator = torch.Generator(device=device).manual_seed(seed)
+    return torch.rand(shape, generator=generator, device=device) + 0.1
+
+
+def _expected_batch_channel_n(shape):
+    if len(shape) <= 2:
+        n = int(np.prod(shape))
+        return 1, 1, n
+    b, c = shape[:2]
+    n = int(np.prod(shape[2:]))
+    return b, c, n
+
+
+def _pot_plan(source, target, cost_matrix, solver):
+    source_np = source.detach().cpu().numpy()
+    target_np = target.detach().cpu().numpy()
+    cost_np = cost_matrix.detach().cpu().numpy()
+    return ot.sinkhorn(
+        source_np,
+        target_np,
+        cost_np,
+        reg=1.0 / solver.reg,
+        numItermax=solver.itrstep,
+        stopThr=1e-9,
+    )
 
 
 def test_build_cost_matrix():
@@ -71,125 +116,136 @@ def test_build_cost_matrix():
     assert torch.allclose(cost_l2, expected), "L2 distance matrix incorrect"
 
 
-def test_sinkhorn_balanced_print():
+@pytest.mark.parametrize(
+    "shape",
+    [
+        (4,),
+        (2, 3),
+        (2, 2, 2),
+        (1, 1, 2, 3),
+        (2, 3, 2, 2),
+        (1, 2, 2, 2, 2),
+    ],
+)
+def test_run_once_accepts_multiple_raw_dimensions(shape):
+    _require_cuda()
+    device = "cuda"
+    solver = tr.SinkhornSolver(reg=0.7, itrstep=300, threshold=0, device=device)
 
-    print("=" * 50)
-    print("Testing sinkhorn_balanced function")
-    print("Input shape: ")
-
-    # Check CUDA availability
-    if not torch.cuda.is_available():
-        raise ValueError("Warning: CUDA not available, tests may fail.")
-    else:
-        device = 'cuda'
-        print("CUDA available, running on GPU.")
-
-    # Create two random distributions
-    source = torch.rand(1, 1, 2, 2, device=device)
-    target = torch.rand(1, 1, 2, 2, device=device)
-
-    print("\n--- Input source ---")
-    print(source)
-    print("\n--- Input target ---")
-    print(target)
-
-    print("\n--- Calling sinkhorn_balanced ---")
-    try:
-        solver = tr.SinkhornSolver(
-            reg=0.1,
-            itrstep=100,
-            threshold=1e-5,
-            device=device,
-            p=2,
-        )
-        P = solver.sinkhorn(
-            source,
-            target,
-            cost_matrix=None,
-            returngrad=False,
-        )
-        print("\n--- Output P (transport plan) shape ---")
-        print(P.shape)
-        print("\n--- Output P content (partial) ---")
-        print(P)
-    except Exception as e:
-        print("\n--- Error occurred ---")
-        print(f"Error type: {type(e).__name__}")
-        print(f"Error message: {e}")
-        import traceback
-
-        traceback.print_exc()
-
-
-def test_sinkhorn_cuda():
-    if not torch.cuda.is_available():
-        raise ValueError("CUDA not available, skipping CUDA test.")
-
-    device = 'cuda'
-    # Create two random distributions
-    torch.manual_seed(42)
-    source = torch.rand(2, 2, device=device)
-    target = torch.rand(2, 2, device=device)
-
-    print("\n--- Input source ---")
-    print(source)
-    print("\n--- Input target ---")
-    print(target)
-
-    solver = tr.SinkhornSolver(reg=0.02, itrstep=100, device=device)
-    source, target, cost_matrix, _ = solver.data_preprocess(source, target)
-
-    torch_result = solver.sinkhorn(
-        source=source,
-        target=target,
-        cost_matrix=cost_matrix,
-        returngrad=True,
+    source = _make_positive(shape, device=device, seed=11)
+    target = _make_positive(shape, device=device, seed=23)
+    out = solver.run_once(
+        source,
+        target,
+        return_plan=True,
+        return_uv=True,
+        return_distance=True,
     )
 
-    cuda_result = solver.sinkhorn_cuda(
-        source=source,
-        target=target,
-        cost_matrix=cost_matrix,
+    batch, channel, n = _expected_batch_channel_n(shape)
+    assert out["source"].shape == (batch, channel, n)
+    assert out["target"].shape == (batch, channel, n)
+    assert out["cost_matrix"].shape == (n, n)
+    assert out["plan"].shape == (batch, channel, n, n)
+    assert out["u"].shape == (batch, channel, n)
+    assert out["v"].shape == (batch, channel, n)
+    assert out["distance"].shape == (batch, channel)
+
+    distance_from_plan = (out["plan"] * out["cost_matrix"]).sum(dim=(-2, -1))
+    assert torch.allclose(out["distance"], distance_from_plan, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        (4,),
+        (2, 3),
+        (2, 2, 2),
+        (2, 2, 2, 2),
+    ],
+)
+def test_run_once_distance_matches_pot_sinkhorn(shape):
+    _require_cuda()
+    _require_pot()
+    device = "cuda"
+    solver = tr.SinkhornSolver(reg=0.7, itrstep=1000, threshold=0, device=device)
+
+    source = _make_positive(shape, device=device, seed=101)
+    target = _make_positive(shape, device=device, seed=211)
+    out = solver.run_once(source, target, return_plan=True, return_distance=True)
+
+    expected_distances = []
+    for b in range(out["source"].shape[0]):
+        channel_distances = []
+        for c in range(out["source"].shape[1]):
+            pot_transport = _pot_plan(
+                out["source"][b, c],
+                out["target"][b, c],
+                out["cost_matrix"],
+                solver,
+            )
+            pot_distance = np.sum(pot_transport * out["cost_matrix"].detach().cpu().numpy())
+            channel_distances.append(pot_distance)
+        expected_distances.append(channel_distances)
+
+    expected = torch.tensor(expected_distances, device=device, dtype=out["distance"].dtype)
+    assert torch.allclose(out["distance"], expected, rtol=5e-3, atol=1e-5)
+
+
+def test_run_once_plan_matches_pot_sinkhorn_small():
+    _require_cuda()
+    _require_pot()
+    device = "cuda"
+    solver = tr.SinkhornSolver(reg=0.7, itrstep=1000, threshold=0, device=device)
+
+    source = _make_positive((2, 2), device=device, seed=307)
+    target = _make_positive((2, 2), device=device, seed=401)
+    out = solver.run_once(source, target, return_plan=True)
+
+    pot_transport = _pot_plan(out["source"][0, 0], out["target"][0, 0], out["cost_matrix"], solver)
+    expected = torch.tensor(pot_transport, device=device, dtype=out["plan"].dtype)
+    assert torch.allclose(out["plan"][0, 0], expected, rtol=5e-3, atol=1e-5)
+
+
+def test_gradient_matches_numeric_directional_derivative():
+    _require_cuda()
+    device = "cuda"
+    solver = tr.SinkhornSolver(reg=0.7, itrstep=1000, threshold=0, device=device)
+
+    source = torch.tensor([0.20, 0.30, 0.25, 0.25], device=device)
+    target = torch.tensor([0.15, 0.35, 0.20, 0.30], device=device)
+    direction = torch.tensor([0.20, -0.10, 0.05, -0.15], device=device)
+    eps = 1e-3
+
+    def regularized_objective(x):
+        out = solver.run_once(x, target, return_plan=True, return_distance=True)
+        plan = out["plan"]
+        entropy_term = (plan * torch.log(torch.clamp(plan, min=1e-12))).sum()
+        return out["distance"].sum() + entropy_term / solver.reg
+
+    out = solver.run_once(
+        source,
+        target,
+        return_plan=False,
+        return_uv=True,
+        return_grad=True,
+        return_distance=True,
     )
+    analytic_grad = out["grad_source"].reshape(-1)
+    analytic_directional = torch.sum(analytic_grad * direction)
 
-    torch_plan = torch_result["plan"].squeeze(0).squeeze(0)
-    relative_error = torch.linalg.norm(cuda_result["plan"] - torch_plan) / torch.clamp(
-        torch.linalg.norm(torch_plan), min=1e-12
+    plus = source + eps * direction
+    minus = source - eps * direction
+    loss_plus = regularized_objective(plus)
+    loss_minus = regularized_objective(minus)
+    numeric_directional = (loss_plus - loss_minus) / (2 * eps)
+
+    assert torch.allclose(
+        analytic_directional,
+        numeric_directional,
+        rtol=2e-2,
+        atol=2e-3,
     )
-
-    print(f"CUDA relative error: {relative_error.item():.4e}")
-    assert relative_error < 1e-4
-
-
-def test_sinkhorn_log():
-    if not torch.cuda.is_available():
-        raise ValueError("CUDA not available, skipping CUDA test.")
-
-    device = 'cuda'
-    # Create two random distributions
-    torch.manual_seed(42)
-    source = torch.rand(2, 2, device=device).abs()
-    target = torch.rand(2, 2, device=device).abs()
-
-    solver = tr.SinkhornSolver(reg=0.02, itrstep=100, device=device)
-    source, target, cost_matrix, cost_matrix_T = solver.data_preprocess(source, target)
-
-    print("\n--- Input source ---")
-    print(source)
-    print("\n--- Input target ---")
-    print(target)
-
-    u, v = solver.sinkhorn_log_cuda(
-        source=source,
-        target=target,
-        cost_matrix=cost_matrix,
-        cost_matrix_T=cost_matrix_T,
-    )
-
-    print("\n--- Output u  ---")
-    print(u)
-    print("\n--- Output v  ---")
-    print(v)
 
 
 def loss_test():
@@ -234,11 +290,3 @@ def loss_test():
         print(f"step {step}, loss = {loss_value.item():.6f}")
         print("source:", source.detach())
         print("target:", target)
-
-
-if __name__ == "__main__":
-    test_sinkhorn_balanced_print()
-    test_build_cost_matrix()
-    test_sinkhorn_log()
-    test_sinkhorn_cuda()
-    loss_test()
