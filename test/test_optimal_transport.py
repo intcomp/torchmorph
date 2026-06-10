@@ -264,18 +264,43 @@ def test_cuda_backends_reject_batched_inputs(kwargs):
         solver.run_once(source, target, **kwargs)
 
 
-def test_gradient_matches_numeric_directional_derivative():
+@pytest.mark.parametrize(
+    "shape",
+    [
+        (4,),
+        (2, 3),
+        (2, 2, 2),
+        (1, 1, 2, 3),
+        (2, 2, 2, 2),
+    ],
+)
+def test_gradient_matches_numeric_directional_derivative(shape):
     _require_cuda()
     device = "cuda"
-    solver = tr.SinkhornSolver(reg=0.7, itrstep=1000, threshold=0, device=device)
+    solver = tr.SinkhornSolver(reg=0.7, itrstep=3000, threshold=0, device=device)
 
-    source = torch.tensor([0.20, 0.30, 0.25, 0.25], device=device)
-    target = torch.tensor([0.15, 0.35, 0.20, 0.30], device=device)
-    direction = torch.tensor([0.20, -0.10, 0.05, -0.15], device=device)
-    eps = 1e-3
+    source_raw = _make_positive(shape, device=device, seed=1009)
+    target_raw = _make_positive(shape, device=device, seed=2003)
+    source, target, cost_matrix, _ = solver.data_preprocess(
+        source_raw,
+        target_raw,
+        force_batched=True,
+        dtype=torch.float64,
+    )
+
+    direction = _make_positive(source.shape, device=device, seed=3001).double() - 0.6
+    direction = direction - direction.mean(dim=-1, keepdim=True)
+    eps = 1e-4
 
     def regularized_objective(x):
-        out = solver.run_once(x, target, return_plan=True, return_distance=True)
+        out = solver.run_once(
+            x,
+            target,
+            cost_matrix=cost_matrix,
+            return_plan=True,
+            return_distance=True,
+            dtype=torch.float64,
+        )
         plan = out["plan"]
         entropy_term = (plan * torch.log(torch.clamp(plan, min=1e-12))).sum()
         return out["distance"].sum() + entropy_term / solver.reg
@@ -283,13 +308,15 @@ def test_gradient_matches_numeric_directional_derivative():
     out = solver.run_once(
         source,
         target,
+        cost_matrix=cost_matrix,
         return_plan=False,
         return_uv=True,
         return_grad=True,
         return_distance=True,
+        dtype=torch.float64,
     )
     analytic_grad = out["grad_source"].reshape(-1)
-    analytic_directional = torch.sum(analytic_grad * direction)
+    analytic_directional = torch.sum(analytic_grad * direction.reshape(-1))
 
     plus = source + eps * direction
     minus = source - eps * direction
@@ -300,8 +327,8 @@ def test_gradient_matches_numeric_directional_derivative():
     assert torch.allclose(
         analytic_directional,
         numeric_directional,
-        rtol=2e-2,
-        atol=2e-3,
+        rtol=1e-7,
+        atol=1e-7,
     )
 
 
@@ -347,3 +374,14 @@ def loss_test():
         print(f"step {step}, loss = {loss_value.item():.6f}")
         print("source:", source.detach())
         print("target:", target)
+
+
+if __name__ == "__main__":
+    pytest.main(
+        [
+            __file__,
+            "-k",
+            "not loss_test",
+            "-q",
+        ]
+    )
