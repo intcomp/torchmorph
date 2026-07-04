@@ -1,5 +1,5 @@
 from .binary import binary_closing, binary_dilation, binary_erosion, binary_opening
-from .grey import grey_erosion
+from .grey import grey_closing, grey_dilation, grey_erosion, grey_opening
 from .structure import generate_binary_structure
 
 __all__ = [
@@ -9,4 +9,7 @@ __all__ = [
     "binary_opening",
     "binary_closing",
     "grey_erosion",
+    "grey_dilation",
+    "grey_opening",
+    "grey_closing",
 ]

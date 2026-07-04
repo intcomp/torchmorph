@@ -1,18 +1,22 @@
 #include <torch/extension.h>
+#include <c10/cuda/CUDAException.h>
+#include <c10/cuda/CUDAGuard.h>
+#include <c10/cuda/CUDAStream.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include <math_constants.h>
 #include <vector>
 #include <algorithm>
 #include <cstdint>
 #include <cfloat>
 
-#define GREYERO_MAX_NDIM 8
+#define GREY_MORPH_MAX_NDIM 8
 
-struct GreyErosionGeometry {
-    int64_t spatial_size[GREYERO_MAX_NDIM];
-    int64_t spatial_stride[GREYERO_MAX_NDIM];
-    int64_t min_deltas[GREYERO_MAX_NDIM];
-    int64_t max_deltas[GREYERO_MAX_NDIM];
+struct GreyMorphologyGeometry {
+    int64_t spatial_size[GREY_MORPH_MAX_NDIM];
+    int64_t spatial_stride[GREY_MORPH_MAX_NDIM];
+    int64_t min_deltas[GREY_MORPH_MAX_NDIM];
+    int64_t max_deltas[GREY_MORPH_MAX_NDIM];
 };
 
 // Matches scipy.ndimage border modes.
@@ -22,6 +26,38 @@ enum BorderMode {
     MODE_NEAREST  = 2,  // Repeat nearest edge value
     MODE_MIRROR   = 3,  // Whole-sample symmetric
     MODE_WRAP     = 4,  // Periodic wrap padding
+};
+
+struct GreyErosionOp {
+    __device__ __forceinline__ static float identity() {
+        return CUDART_INF_F;
+    }
+
+    __device__ __forceinline__ static float combine(
+        float result, float value, float structure
+    ) {
+        return fminf(result, value - structure);
+    }
+
+    __host__ __forceinline__ static int64_t offset(int64_t delta) {
+        return delta;
+    }
+};
+
+struct GreyDilationOp {
+    __device__ __forceinline__ static float identity() {
+        return -CUDART_INF_F;
+    }
+
+    __device__ __forceinline__ static float combine(
+        float result, float value, float structure
+    ) {
+        return fmaxf(result, value + structure);
+    }
+
+    __host__ __forceinline__ static int64_t offset(int64_t delta) {
+        return -delta;
+    }
 };
 
 __device__ __forceinline__ int64_t map_coord(
@@ -60,16 +96,17 @@ __device__ __forceinline__ int64_t map_coord(
     }
 }
 
-// Fused erosion kernel. struct_meta stores per-element dimension offsets
+// Fused grey morphology kernel. struct_meta stores per-element dimension offsets
 // followed by the precomputed flat offset used by the interior fast path.
-__global__ void grey_erosion_fused_kernel(
+template <typename MorphologyOp>
+__global__ void grey_morphology_fused_kernel(
     const float* __restrict__ input,
     float* __restrict__ output,
     const float* __restrict__ struct_vals,
     const int64_t* __restrict__ struct_meta,
     const int num_struct,
     const int ndim_spatial,
-    const GreyErosionGeometry geom,
+    const GreyMorphologyGeometry geom,
     const int64_t total_spatial,
     const int64_t batch_channel,
     const BorderMode mode,
@@ -81,14 +118,14 @@ __global__ void grey_erosion_fused_kernel(
     int64_t bc = idx / total_spatial;
     int64_t sp = idx % total_spatial;
 
-    int64_t coords[GREYERO_MAX_NDIM];
+    int64_t coords[GREY_MORPH_MAX_NDIM];
     int64_t rem = sp;
     for (int d = 0; d < ndim_spatial; d++) {
         coords[d] = rem / geom.spatial_stride[d];
         rem %= geom.spatial_stride[d];
     }
 
-    float min_val = FLT_MAX;
+    float result = MorphologyOp::identity();
     const float* in_ptr = input + bc * total_spatial;
     const int meta_stride = ndim_spatial + 1;
 
@@ -105,9 +142,9 @@ __global__ void grey_erosion_fused_kernel(
         for (int i = 0; i < num_struct; i++) {
             int64_t offset = struct_meta[i * meta_stride + ndim_spatial];
             float val = in_ptr[sp + offset];
-            min_val = fminf(min_val, val - struct_vals[i]);
+            result = MorphologyOp::combine(result, val, struct_vals[i]);
         }
-        output[idx] = min_val;
+        output[idx] = result;
         return;
     }
 
@@ -126,13 +163,14 @@ __global__ void grey_erosion_fused_kernel(
         }
 
         float val = use_cval ? cval : in_ptr[flat_idx];
-        min_val = fminf(min_val, val - struct_vals[i]);
+        result = MorphologyOp::combine(result, val, struct_vals[i]);
     }
 
-    output[idx] = min_val;
+    output[idx] = result;
 }
 
-torch::Tensor grey_erosion_cuda(
+template <typename MorphologyOp>
+static torch::Tensor grey_morphology_cuda(
     torch::Tensor input,
     torch::Tensor structure,
     torch::Tensor footprint,
@@ -141,6 +179,8 @@ torch::Tensor grey_erosion_cuda(
     float cval
 ) {
     TORCH_CHECK(input.is_cuda(), "input must be a CUDA tensor");
+    const c10::cuda::CUDAGuard device_guard(input.device());
+
     TORCH_CHECK(!structure.is_cuda(), "structure must be a CPU tensor");
     TORCH_CHECK(!footprint.is_cuda(), "footprint must be a CPU tensor");
     TORCH_CHECK(input.is_contiguous(), "input must be contiguous");
@@ -151,8 +191,8 @@ torch::Tensor grey_erosion_cuda(
     TORCH_CHECK(footprint.dtype() == torch::kBool, "footprint must be bool");
 
     int ndim_spatial = structure.dim();
-    TORCH_CHECK(ndim_spatial > 0 && ndim_spatial <= GREYERO_MAX_NDIM,
-                "structure dimension must be in 1-", GREYERO_MAX_NDIM,
+    TORCH_CHECK(ndim_spatial > 0 && ndim_spatial <= GREY_MORPH_MAX_NDIM,
+                "structure dimension must be in 1-", GREY_MORPH_MAX_NDIM,
                 ", got ", ndim_spatial);
     TORCH_CHECK((int)origin_vec.size() == ndim_spatial,
                 "origin length must match structure dimensions");
@@ -190,8 +230,8 @@ torch::Tensor grey_erosion_cuda(
         total_spatial *= h_spatial_size[d];
     }
 
-    GreyErosionGeometry h_geom;
-    for (int d = 0; d < GREYERO_MAX_NDIM; d++) {
+    GreyMorphologyGeometry h_geom;
+    for (int d = 0; d < GREY_MORPH_MAX_NDIM; d++) {
         h_geom.spatial_size[d] = 0;
         h_geom.spatial_stride[d] = 0;
         h_geom.min_deltas[d] = 0;
@@ -242,7 +282,7 @@ torch::Tensor grey_erosion_cuda(
             tmp %= h_structure_stride[d];
 
             int64_t center_d = structure.size(d) / 2 + origin_vec[d];
-            int64_t delta = coord_d - center_d;
+            int64_t delta = MorphologyOp::offset(coord_d - center_d);
             h_struct_meta.push_back(delta);
             flat_offset += delta * h_spatial_stride[d];
             h_geom.min_deltas[d] = std::min(h_geom.min_deltas[d], delta);
@@ -269,8 +309,9 @@ torch::Tensor grey_erosion_cuda(
     int64_t total_threads = batch_channel * total_spatial;
     int threads = 256;
     int blocks = (int)((total_threads + threads - 1) / threads);
+    const auto stream = c10::cuda::getCurrentCUDAStream(input.get_device());
 
-    grey_erosion_fused_kernel<<<blocks, threads>>>(
+    grey_morphology_fused_kernel<MorphologyOp><<<blocks, threads, 0, stream>>>(
         input.data_ptr<float>(),
         output.data_ptr<float>(),
         d_struct_vals.data_ptr<float>(),
@@ -283,6 +324,33 @@ torch::Tensor grey_erosion_cuda(
         bmode,
         cval
     );
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
 
     return output;
+}
+
+torch::Tensor grey_erosion_cuda(
+    torch::Tensor input,
+    torch::Tensor structure,
+    torch::Tensor footprint,
+    std::vector<int64_t> origin_vec,
+    int mode_int,
+    float cval
+) {
+    return grey_morphology_cuda<GreyErosionOp>(
+        input, structure, footprint, origin_vec, mode_int, cval
+    );
+}
+
+torch::Tensor grey_dilation_cuda(
+    torch::Tensor input,
+    torch::Tensor structure,
+    torch::Tensor footprint,
+    std::vector<int64_t> origin_vec,
+    int mode_int,
+    float cval
+) {
+    return grey_morphology_cuda<GreyDilationOp>(
+        input, structure, footprint, origin_vec, mode_int, cval
+    );
 }

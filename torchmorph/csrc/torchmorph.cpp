@@ -11,6 +11,15 @@ torch::Tensor grey_erosion_cuda(
     float cval
 );
 
+torch::Tensor grey_dilation_cuda(
+    torch::Tensor input,
+    torch::Tensor structure,
+    torch::Tensor footprint,
+    std::vector<int64_t> origin,
+    int mode,
+    float cval
+);
+
 std::tuple<torch::Tensor, torch::Tensor> edt_cuda(
     torch::Tensor input,
     std::vector<float> sampling,
@@ -40,6 +49,15 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 
     m.def("grey_erosion_cuda", &grey_erosion_cuda,
           "N-dimensional fused grey erosion",
+          py::arg("input"),
+          py::arg("structure"),
+          py::arg("footprint"),
+          py::arg("origin"),
+          py::arg("mode"),
+          py::arg("cval"));
+
+    m.def("grey_dilation_cuda", &grey_dilation_cuda,
+          "N-dimensional fused grey dilation",
           py::arg("input"),
           py::arg("structure"),
           py::arg("footprint"),

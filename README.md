@@ -2,18 +2,23 @@
 
 > ⚡ CUDA-Accelerated, Batch-Parallel Morphological Transformations for PyTorch
 
-TorchMorph is a lightweight, extensible library that brings **GPU-accelerated morphological operations** into the PyTorch ecosystem.  
+TorchMorph is a lightweight, extensible library that brings **GPU-accelerated morphological operations** into the PyTorch ecosystem.
 It provides a **clean Python API** backed by **custom CUDA kernels**, enabling highly efficient, **batch-parallel** transformations for real-time and large-scale vision tasks.
 
 ---
 
 ## 🚀 Key Features
 
-- ⚡ **CUDA Acceleration** – All operators are implemented with native CUDA kernels for maximum throughput.  
-- 🧩 **Seamless PyTorch Integration** – Accepts and returns `torch.Tensor` objects, fully compatible with autograd and CUDA streams.  
-- 🧠 **Highly Batch-Parallel** – Optimized to process large batches and multi-dimensional inputs concurrently.  
-- 🧱 **Modular Design** – Each operation is isolated in its own kernel, making it easy to add or extend transformations.  
-- ✅ **Lightweight & Self-Contained** – No third-party dependencies beyond PyTorch and a working CUDA toolkit.  
+- ⚡ **CUDA Acceleration** – All operators are implemented with native CUDA kernels for maximum throughput.
+- 🧩 **PyTorch Tensor Integration** – Accepts and returns CUDA `torch.Tensor` objects for direct use in tensor-processing pipelines.
+- 🧠 **Highly Batch-Parallel** – Optimized to process large batches and multi-dimensional inputs concurrently.
+- 🧱 **Modular Design** – Public operators reuse shared CUDA morphology primitives and compose them into higher-level transformations.
+- ✅ **Lightweight & Self-Contained** – No third-party dependencies beyond PyTorch and a working CUDA toolkit.
+
+
+> **NaN values:** NaN propagation is not guaranteed to match SciPy. Replace or
+> otherwise handle NaN values before calling a morphological operator when
+> deterministic missing-value behavior is required.
 
 ---
 

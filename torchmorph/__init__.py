@@ -10,7 +10,10 @@ from .morphology import (
     binary_erosion,
     binary_opening,
     generate_binary_structure,
+    grey_closing,
+    grey_dilation,
     grey_erosion,
+    grey_opening,
 )
 
 __all__ = [
@@ -24,4 +27,7 @@ __all__ = [
     "binary_opening",
     "binary_closing",
     "grey_erosion",
+    "grey_dilation",
+    "grey_opening",
+    "grey_closing",
 ]
