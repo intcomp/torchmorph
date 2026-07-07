@@ -9,11 +9,14 @@ from .morphology import (
     binary_dilation,
     binary_erosion,
     binary_opening,
+    black_tophat,
     generate_binary_structure,
     grey_closing,
     grey_dilation,
     grey_erosion,
     grey_opening,
+    morphological_gradient,
+    white_tophat,
 )
 
 __all__ = [
@@ -30,4 +33,7 @@ __all__ = [
     "grey_dilation",
     "grey_opening",
     "grey_closing",
+    "morphological_gradient",
+    "white_tophat",
+    "black_tophat",
 ]

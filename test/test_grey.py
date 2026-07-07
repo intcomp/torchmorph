@@ -1,11 +1,14 @@
 import numpy as np
 import pytest
 import torch
+from scipy.ndimage import black_tophat as scipy_black_tophat
 from scipy.ndimage import generate_binary_structure
 from scipy.ndimage import grey_closing as scipy_grey_closing
 from scipy.ndimage import grey_dilation as scipy_grey_dilation
 from scipy.ndimage import grey_erosion as scipy_grey_erosion
 from scipy.ndimage import grey_opening as scipy_grey_opening
+from scipy.ndimage import morphological_gradient as scipy_morphological_gradient
+from scipy.ndimage import white_tophat as scipy_white_tophat
 
 import torchmorph as tm
 
@@ -18,6 +21,9 @@ GREY_OPERATORS = [
     pytest.param(tm.grey_dilation, scipy_grey_dilation, id="dilation"),
     pytest.param(tm.grey_opening, scipy_grey_opening, id="opening"),
     pytest.param(tm.grey_closing, scipy_grey_closing, id="closing"),
+    pytest.param(tm.morphological_gradient, scipy_morphological_gradient, id="gradient"),
+    pytest.param(tm.white_tophat, scipy_white_tophat, id="white_tophat"),
+    pytest.param(tm.black_tophat, scipy_black_tophat, id="black_tophat"),
 ]
 
 TORCH_OPERATORS = [
@@ -25,6 +31,9 @@ TORCH_OPERATORS = [
     pytest.param(tm.grey_dilation, id="dilation"),
     pytest.param(tm.grey_opening, id="opening"),
     pytest.param(tm.grey_closing, id="closing"),
+    pytest.param(tm.morphological_gradient, id="gradient"),
+    pytest.param(tm.white_tophat, id="white_tophat"),
+    pytest.param(tm.black_tophat, id="black_tophat"),
 ]
 
 CASE_2D = np.arange(1, 10, dtype=np.float32).reshape(1, 1, 3, 3)

@@ -230,3 +230,93 @@ def grey_closing(
         cval=cval,
         origin=origin,
     )
+
+
+def morphological_gradient(
+    input: Tensor,
+    size: int | tuple[int, ...] | None = None,
+    footprint: Tensor | None = None,
+    structure: Tensor | None = None,
+    output: Tensor | None = None,
+    mode: str = "reflect",
+    cval: float = 0.0,
+    origin: int | tuple[int, ...] = 0,
+) -> Tensor:
+    """N-dimensional morphological gradient for ``(B, C, Spatial...)`` CUDA tensors."""
+    dilated = grey_dilation(
+        input,
+        size=size,
+        footprint=footprint,
+        structure=structure,
+        mode=mode,
+        cval=cval,
+        origin=origin,
+    )
+    eroded = grey_erosion(
+        input,
+        size=size,
+        footprint=footprint,
+        structure=structure,
+        mode=mode,
+        cval=cval,
+        origin=origin,
+    )
+    result = dilated - eroded
+    if output is not None:
+        output.copy_(result)
+        return output
+    return result
+
+
+def white_tophat(
+    input: Tensor,
+    size: int | tuple[int, ...] | None = None,
+    footprint: Tensor | None = None,
+    structure: Tensor | None = None,
+    output: Tensor | None = None,
+    mode: str = "reflect",
+    cval: float = 0.0,
+    origin: int | tuple[int, ...] = 0,
+) -> Tensor:
+    """N-dimensional white top-hat filter for ``(B, C, Spatial...)`` CUDA tensors."""
+    opened = grey_opening(
+        input,
+        size=size,
+        footprint=footprint,
+        structure=structure,
+        mode=mode,
+        cval=cval,
+        origin=origin,
+    )
+    result = input.float() - opened
+    if output is not None:
+        output.copy_(result)
+        return output
+    return result
+
+
+def black_tophat(
+    input: Tensor,
+    size: int | tuple[int, ...] | None = None,
+    footprint: Tensor | None = None,
+    structure: Tensor | None = None,
+    output: Tensor | None = None,
+    mode: str = "reflect",
+    cval: float = 0.0,
+    origin: int | tuple[int, ...] = 0,
+) -> Tensor:
+    """N-dimensional black top-hat filter for ``(B, C, Spatial...)`` CUDA tensors."""
+    closed = grey_closing(
+        input,
+        size=size,
+        footprint=footprint,
+        structure=structure,
+        mode=mode,
+        cval=cval,
+        origin=origin,
+    )
+    result = closed - input.float()
+    if output is not None:
+        output.copy_(result)
+        return output
+    return result

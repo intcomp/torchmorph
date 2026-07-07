@@ -17,23 +17,26 @@ GREY_OPERATORS = {
     "dilation": (ndi.grey_dilation, tm.grey_dilation),
     "opening": (ndi.grey_opening, tm.grey_opening),
     "closing": (ndi.grey_closing, tm.grey_closing),
+    "gradient": (ndi.morphological_gradient, tm.morphological_gradient),
+    "white_tophat": (ndi.white_tophat, tm.white_tophat),
+    "black_tophat": (ndi.black_tophat, tm.black_tophat),
 }
 
 
-def run_cuda(torch_op, x):
-    result = torch_op(x, size=STRUCTURE_SIZE)
+def run_cuda(torch_op, x, structure_size):
+    result = torch_op(x, size=structure_size)
     torch.cuda.synchronize()
     return result
 
 
-def bench_grey_operator(operation):
+def bench_grey_operator(operation, image_sizes, batch_sizes, structure_size, min_run_time):
     scipy_op, torch_op = GREY_OPERATORS[operation]
 
     print("\n============================================")
     print(f" Benchmark: grey {operation} ")
     print("============================================")
 
-    for batch_size in BATCH_SIZES:
+    for batch_size in batch_sizes:
         table = PrettyTable()
         table.field_names = [
             "Size",
@@ -46,7 +49,7 @@ def bench_grey_operator(operation):
         for column in table.field_names:
             table.align[column] = "r"
 
-        for image_size in IMAGE_SIZES:
+        for image_size in image_sizes:
             x = torch.randn(
                 batch_size,
                 1,
@@ -62,32 +65,34 @@ def bench_grey_operator(operation):
                 stmt="[scipy_op(data, size=structure_size) for data in inputs]",
                 globals={
                     "scipy_op": scipy_op,
-                    "structure_size": STRUCTURE_SIZE,
+                    "structure_size": structure_size,
                     "inputs": x_np_list,
                 },
-            ).blocked_autorange(min_run_time=MIN_RUN_TIME)
+            ).blocked_autorange(min_run_time=min_run_time)
 
             for data in x_one:
-                torch_op(data, size=STRUCTURE_SIZE)
+                torch_op(data, size=structure_size)
             torch.cuda.synchronize()
 
             torch_single_time = benchmark.Timer(
-                stmt="[run_cuda(torch_op, data) for data in inputs]",
+                stmt="[run_cuda(torch_op, data, structure_size) for data in inputs]",
                 globals={
                     "run_cuda": run_cuda,
                     "torch_op": torch_op,
                     "inputs": x_one,
+                    "structure_size": structure_size,
                 },
-            ).blocked_autorange(min_run_time=MIN_RUN_TIME)
+            ).blocked_autorange(min_run_time=min_run_time)
 
             torch_batch_time = benchmark.Timer(
-                stmt="run_cuda(torch_op, x)",
+                stmt="run_cuda(torch_op, x, structure_size)",
                 globals={
                     "run_cuda": run_cuda,
                     "torch_op": torch_op,
                     "x": x,
+                    "structure_size": structure_size,
                 },
-            ).blocked_autorange(min_run_time=MIN_RUN_TIME)
+            ).blocked_autorange(min_run_time=min_run_time)
 
             scipy_ms = scipy_time.median * 1e3 / batch_size
             torch_single_ms = torch_single_time.median * 1e3 / batch_size
@@ -118,11 +123,43 @@ def main():
         default="all",
         help="Operator to benchmark (default: all).",
     )
+    parser.add_argument(
+        "--sizes",
+        type=int,
+        nargs="+",
+        default=IMAGE_SIZES,
+        help="Image sizes to benchmark (default: 64 128 256 1024).",
+    )
+    parser.add_argument(
+        "--batches",
+        type=int,
+        nargs="+",
+        default=BATCH_SIZES,
+        help="Batch sizes to benchmark (default: 1 2 4 16).",
+    )
+    parser.add_argument(
+        "--structure-size",
+        type=int,
+        default=STRUCTURE_SIZE,
+        help="Square structuring element size (default: 3).",
+    )
+    parser.add_argument(
+        "--min-run-time",
+        type=float,
+        default=MIN_RUN_TIME,
+        help="Minimum benchmark time per timer in seconds (default: 1.0).",
+    )
     args = parser.parse_args()
 
     operations = GREY_OPERATORS if args.operation == "all" else (args.operation,)
     for operation in operations:
-        bench_grey_operator(operation)
+        bench_grey_operator(
+            operation,
+            image_sizes=args.sizes,
+            batch_sizes=args.batches,
+            structure_size=args.structure_size,
+            min_run_time=args.min_run_time,
+        )
 
 
 if __name__ == "__main__":
