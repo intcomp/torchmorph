@@ -2,19 +2,7 @@ import torch
 from torch import Tensor
 
 from .. import _C
-from .structure import generate_binary_structure
-
-
-def _prepare_origin(origin: int | tuple[int, ...], ndim=int) -> tuple[int, ...]:
-    """change the origin into tuple"""
-    if isinstance(origin, int):
-        return (origin,) * ndim
-    origin = tuple(origin)
-
-    if (len(origin)) != ndim:
-        raise ValueError(f"origin dimension is not {ndim}, got {len(origin)}")
-
-    return origin
+from .structure import _normalize_origin, generate_binary_structure
 
 
 def _binary_morphology_cuda_step(
@@ -51,13 +39,13 @@ def _binary_morphology(
     if input.numel() == 0:
         raise ValueError(f"Invalid input: empty tensor with shape {input.shape}.")
 
-    iterations_flag = iterations < 1
+    iterate_until_stable = iterations < 1
     spatial_ndim = input.ndim - 2
 
     if structure is None:
         structure = generate_binary_structure(spatial_ndim, 1)
 
-    origin = _prepare_origin(origin, spatial_ndim)
+    origin = _normalize_origin(origin, spatial_ndim)
     x = input != 0
     input_bool = x
     mask_bool = mask.to(device=input.device, dtype=torch.bool) if mask is not None else None
@@ -71,7 +59,7 @@ def _binary_morphology(
             mode=mode,
         )
 
-    if iterations_flag:
+    if iterate_until_stable:
         old = None
         while True:
             x = step(x)
@@ -158,7 +146,7 @@ def binary_opening(
         structure,
         iterations,
         mask,
-        output,
+        None,
         border_value,
         origin,
     )
@@ -189,7 +177,7 @@ def binary_closing(
         structure,
         iterations,
         mask,
-        output,
+        None,
         border_value,
         origin,
     )

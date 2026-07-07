@@ -152,6 +152,24 @@ def test_binary_morphology_output(torch_op, scipy_op, np_input, output_shape):
     torch.testing.assert_close(result.cpu(), torch.as_tensor(expected))
 
 
+@pytest.mark.parametrize(
+    ("torch_op", "scipy_op"),
+    [
+        pytest.param(tm.binary_opening, scipy_binary_opening, id="opening"),
+        pytest.param(tm.binary_closing, scipy_binary_closing, id="closing"),
+    ],
+)
+def test_binary_composite_output_contains_only_final_result(torch_op, scipy_op):
+    x = torch.as_tensor(CASE_2D, dtype=torch.float32, device="cuda")
+    output = torch.ones_like(x, dtype=torch.bool)
+
+    result = torch_op(x, output=output)
+
+    assert result is output
+    expected = apply_scipy_to_batch(CASE_2D, scipy_op, output=np.empty((3, 3), dtype=bool))
+    torch.testing.assert_close(output.cpu(), torch.as_tensor(expected))
+
+
 @pytest.mark.parametrize("torch_op", TORCH_OPERATORS)
 def test_binary_morphology_requires_cuda(torch_op):
     x = torch.as_tensor(CASE_2D, dtype=torch.float32)
