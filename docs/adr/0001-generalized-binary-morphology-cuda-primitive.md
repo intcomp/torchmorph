@@ -12,7 +12,7 @@ Binary erosion and binary dilation are also the base operations for binary openi
 
 ## Decision
 
-Implement a generalized binary morphology CUDA primitive, modeled after the grey morphology CUDA primitive, and dispatch CUDA binary erosion and binary dilation through it. The primitive supports batch-channel tensors with arbitrary spatial rank up to the same practical maximum used by the grey implementation. Python remains responsible for iteration loops, mask application, output copying, and composite operators.
+Implement a generalized binary morphology CUDA primitive, modeled after the grey morphology CUDA primitive, and dispatch CUDA binary erosion and binary dilation through it. The primitive supports batch-channel tensors with arbitrary spatial rank up to the same practical maximum used by the grey implementation. Python remains responsible for iteration loops, mask application, output copying, and composite operators. Binary morphology follows the CUDA-only public contract used by the other accelerated morphology and distance-transform operators.
 
 Do not start with specialized 2D or 3D kernels. Keep those as later optimizations once the generalized primitive is correct and benchmarked.
 

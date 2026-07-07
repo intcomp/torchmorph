@@ -152,11 +152,11 @@ def test_binary_morphology_output(torch_op, scipy_op, np_input, output_shape):
     torch.testing.assert_close(result.cpu(), torch.as_tensor(expected))
 
 
-@pytest.mark.parametrize(("torch_op", "scipy_op"), BINARY_OPERATORS)
-def test_binary_morphology_cpu_fallback_matches_scipy(torch_op, scipy_op):
-    result = torch_op(torch.as_tensor(CASE_2D, dtype=torch.float32))
-    expected = apply_scipy_to_batch(CASE_2D, scipy_op)
-    torch.testing.assert_close(result, torch.as_tensor(expected))
+@pytest.mark.parametrize("torch_op", TORCH_OPERATORS)
+def test_binary_morphology_requires_cuda(torch_op):
+    x = torch.as_tensor(CASE_2D, dtype=torch.float32)
+    with pytest.raises(ValueError, match="CUDA"):
+        torch_op(x)
 
 
 @pytest.mark.parametrize("torch_op", TORCH_OPERATORS)
