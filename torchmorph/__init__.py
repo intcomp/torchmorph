@@ -15,6 +15,7 @@ from .morphology import (
     grey_dilation,
     grey_erosion,
     grey_opening,
+    iterate_structure,
     morphological_gradient,
     white_tophat,
 )
@@ -25,6 +26,7 @@ __all__ = [
     "chamfer_distance_transform",
     "brute_force_distance_transform",
     "generate_binary_structure",
+    "iterate_structure",
     "binary_erosion",
     "binary_dilation",
     "binary_opening",
