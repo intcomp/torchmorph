@@ -20,6 +20,20 @@ torch::Tensor grey_dilation_cuda(
     float cval
 );
 
+torch::Tensor binary_erosion_cuda(
+    torch::Tensor input,
+    torch::Tensor structure,
+    std::vector<int64_t> origin,
+    bool border_value
+);
+
+torch::Tensor binary_dilation_cuda(
+    torch::Tensor input,
+    torch::Tensor structure,
+    std::vector<int64_t> origin,
+    bool border_value
+);
+
 std::tuple<torch::Tensor, torch::Tensor> edt_cuda(
     torch::Tensor input,
     std::vector<float> sampling,
@@ -64,6 +78,20 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           py::arg("origin"),
           py::arg("mode"),
           py::arg("cval"));
+
+    m.def("binary_erosion_cuda", &binary_erosion_cuda,
+          "N-dimensional fused binary erosion",
+          py::arg("input"),
+          py::arg("structure"),
+          py::arg("origin"),
+          py::arg("border_value"));
+
+    m.def("binary_dilation_cuda", &binary_dilation_cuda,
+          "N-dimensional fused binary dilation",
+          py::arg("input"),
+          py::arg("structure"),
+          py::arg("origin"),
+          py::arg("border_value"));
 
     m.def("edt_cuda", &edt_cuda,
           "Exact Euclidean Distance Transform (Felzenszwalb algorithm)",
