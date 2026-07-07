@@ -17,6 +17,7 @@ from .morphology import (
     grey_opening,
     iterate_structure,
     morphological_gradient,
+    morphological_laplace,
     white_tophat,
 )
 
@@ -36,6 +37,7 @@ __all__ = [
     "grey_opening",
     "grey_closing",
     "morphological_gradient",
+    "morphological_laplace",
     "white_tophat",
     "black_tophat",
 ]

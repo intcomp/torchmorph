@@ -320,3 +320,39 @@ def black_tophat(
         output.copy_(result)
         return output
     return result
+
+
+def morphological_laplace(
+    input: Tensor,
+    size: int | tuple[int, ...] | None = None,
+    footprint: Tensor | None = None,
+    structure: Tensor | None = None,
+    output: Tensor | None = None,
+    mode: str = "reflect",
+    cval: float = 0.0,
+    origin: int | tuple[int, ...] = 0,
+) -> Tensor:
+    """N-dimensional morphological Laplace for ``(B, C, Spatial...)`` CUDA tensors."""
+    dilated = grey_dilation(
+        input,
+        size=size,
+        footprint=footprint,
+        structure=structure,
+        mode=mode,
+        cval=cval,
+        origin=origin,
+    )
+    eroded = grey_erosion(
+        input,
+        size=size,
+        footprint=footprint,
+        structure=structure,
+        mode=mode,
+        cval=cval,
+        origin=origin,
+    )
+    result = dilated + eroded - 2 * input.float()
+    if output is not None:
+        output.copy_(result)
+        return output
+    return result

@@ -18,6 +18,7 @@ GREY_OPERATORS = {
     "opening": (ndi.grey_opening, tm.grey_opening),
     "closing": (ndi.grey_closing, tm.grey_closing),
     "gradient": (ndi.morphological_gradient, tm.morphological_gradient),
+    "laplace": (ndi.morphological_laplace, tm.morphological_laplace),
     "white_tophat": (ndi.white_tophat, tm.white_tophat),
     "black_tophat": (ndi.black_tophat, tm.black_tophat),
 }

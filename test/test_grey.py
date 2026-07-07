@@ -8,6 +8,7 @@ from scipy.ndimage import grey_dilation as scipy_grey_dilation
 from scipy.ndimage import grey_erosion as scipy_grey_erosion
 from scipy.ndimage import grey_opening as scipy_grey_opening
 from scipy.ndimage import morphological_gradient as scipy_morphological_gradient
+from scipy.ndimage import morphological_laplace as scipy_morphological_laplace
 from scipy.ndimage import white_tophat as scipy_white_tophat
 
 import torchmorph as tm
@@ -22,6 +23,7 @@ GREY_OPERATORS = [
     pytest.param(tm.grey_opening, scipy_grey_opening, id="opening"),
     pytest.param(tm.grey_closing, scipy_grey_closing, id="closing"),
     pytest.param(tm.morphological_gradient, scipy_morphological_gradient, id="gradient"),
+    pytest.param(tm.morphological_laplace, scipy_morphological_laplace, id="laplace"),
     pytest.param(tm.white_tophat, scipy_white_tophat, id="white_tophat"),
     pytest.param(tm.black_tophat, scipy_black_tophat, id="black_tophat"),
 ]
@@ -32,6 +34,7 @@ TORCH_OPERATORS = [
     pytest.param(tm.grey_opening, id="opening"),
     pytest.param(tm.grey_closing, id="closing"),
     pytest.param(tm.morphological_gradient, id="gradient"),
+    pytest.param(tm.morphological_laplace, id="laplace"),
     pytest.param(tm.white_tophat, id="white_tophat"),
     pytest.param(tm.black_tophat, id="black_tophat"),
 ]

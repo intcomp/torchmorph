@@ -6,6 +6,7 @@ from .grey import (
     grey_erosion,
     grey_opening,
     morphological_gradient,
+    morphological_laplace,
     white_tophat,
 )
 from .structure import generate_binary_structure, iterate_structure
@@ -22,6 +23,7 @@ __all__ = [
     "grey_opening",
     "grey_closing",
     "morphological_gradient",
+    "morphological_laplace",
     "white_tophat",
     "black_tophat",
 ]
