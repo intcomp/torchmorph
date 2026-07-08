@@ -41,6 +41,31 @@ std::tuple<torch::Tensor, torch::Tensor> bfdt_cuda(
     bool return_indices
 );
 
+// Optimal Transport functions
+std::tuple<torch::Tensor, torch::Tensor> sinkhorn_fastiter(
+    const torch::Tensor source,
+    const torch::Tensor target,
+    const torch::Tensor k,
+    torch::Tensor u,
+    torch::Tensor v,
+    int itrstep,
+    int N
+);
+
+std::tuple<torch::Tensor, torch::Tensor> sinkhorn_logiter(
+    const torch::Tensor log_a,
+    const torch::Tensor log_b,
+    const torch::Tensor M,
+    const torch::Tensor M_T,
+    torch::Tensor log_u,
+    torch::Tensor log_v,
+    int itrstep,
+    int N,
+    float reg
+);
+
+
+
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("grey_erosion_cuda", &grey_erosion_cuda,
@@ -82,4 +107,29 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           py::arg("sampling") = std::vector<float>(),
           py::arg("return_distances") = true,
           py::arg("return_indices") = false);
+
+    // Optimal Transport
+    m.def("sinkhorn_fastiter", &sinkhorn_fastiter,
+          "Sinkhorn Fast Iteration CUDA",
+          py::arg("source"),
+          py::arg("target"),
+          py::arg("k"),
+          py::arg("u"),
+          py::arg("v"),
+          py::arg("itrstep"),
+          py::arg("N"));
+
+    m.def("sinkhorn_logiter", &sinkhorn_logiter,
+          "Sinkhorn Log-Domain Iteration CUDA",
+          py::arg("log_a"),
+          py::arg("log_b"),
+          py::arg("M"),
+          py::arg("M_T"),
+          py::arg("log_u"),
+          py::arg("log_v"),
+          py::arg("itrstep"),
+          py::arg("N"),
+          py::arg("reg")
+    );
 }
+
