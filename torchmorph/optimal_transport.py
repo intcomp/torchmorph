@@ -60,7 +60,9 @@ class SinkhornSolver:
         if cost_matrix is None:
             cost_matrix = build_cost_matrix((d,), self.p, device)
         elif cost_matrix.shape != (d, d):
-            raise ValueError(f"cost_matrix must have shape ({d}, {d}), got {tuple(cost_matrix.shape)}.")
+            raise ValueError(
+                f"cost_matrix must have shape ({d}, {d}), got {tuple(cost_matrix.shape)}."
+            )
 
         source = source.to(device=device, dtype=dtype).clamp(min=0)
         target = target.to(device=device, dtype=dtype).clamp(min=0)
@@ -107,9 +109,7 @@ class SinkhornSolver:
         if return_potentials:
             output["log_u"], output["log_v"] = log_u, log_v
         if return_plan or return_distance:
-            plan = torch.exp(
-                log_u.unsqueeze(-1) - cost_matrix / self.epsilon + log_v.unsqueeze(-2)
-            )
+            plan = torch.exp(log_u.unsqueeze(-1) - cost_matrix / self.epsilon + log_v.unsqueeze(-2))
             if return_plan:
                 output["plan"] = plan
             if return_distance:

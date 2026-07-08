@@ -121,7 +121,9 @@ def reference_error_check(size=32, epsilon=10.0, max_iter=200, verbose=False):
     }
 
 
-def print_reference_error_table(sizes=(2, 4, 8, 16, 32, 64), max_iters=(100, 200, 500), epsilon=10.0):
+def print_reference_error_table(
+    sizes=(2, 4, 8, 16, 32, 64), max_iters=(100, 200, 500), epsilon=10.0
+):
     """Print a size and iteration sweep for POT-vs-CUDA gradient error."""
     headers = ("size", "N", "eps", "itr", "f_max", "f_rel_l2", "g_max", "g_rel_l2", "close")
     print("| " + " | ".join(headers) + " |")

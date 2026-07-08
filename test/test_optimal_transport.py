@@ -119,7 +119,12 @@ def test_solve_distance_matches_pot_sinkhorn():
     cost_np = out["cost_matrix"].detach().cpu().numpy()
     expected = torch.tensor(
         [
-            float(np.sum(_pot_plan(out["source"][i], out["target"][i], out["cost_matrix"], solver) * cost_np))
+            float(
+                np.sum(
+                    _pot_plan(out["source"][i], out["target"][i], out["cost_matrix"], solver)
+                    * cost_np
+                )
+            )
             for i in range(out["source"].shape[0])
         ],
         device=device,
