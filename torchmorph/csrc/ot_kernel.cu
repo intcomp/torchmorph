@@ -1,299 +1,179 @@
 #include <torch/extension.h>
-#include <cuda.h>
-#include <cuda_runtime.h>
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
 #include <tuple>
-#include <cmath>
-#include <cfloat>
 
+namespace {
 
-__global__ void u_update(
-    const float* a,
-    const float* b,
-    const float* K,
-    float* u,
-    float* v,
-    int N
+constexpr int kThreads = 256;  // power of two, assumed by the reductions below
+
+// One Sinkhorn scaling update. Vectors are batched (n, d); the (d, d) matrix
+// is shared across the batch. One block per (row, batch) pair computes:
+//   out[b, i] = num[b, i] / (sum_j mat[i, j] * scale[b, j] + 1e-12)
+// The u-update passes (a, K, v); the v-update passes (b, K^T, u).
+__global__ void scaling_update(
+    const float* __restrict__ num,
+    const float* __restrict__ mat,
+    const float* __restrict__ scale,
+    float* __restrict__ out,
+    int d
 ){
-    int bidx = blockIdx.x;
-    int blk = blockDim.x;
-    int tid = threadIdx.x;
-    int total = N;
-    float local_sum = 0.0f;
-
-    if(bidx >= total){
-        return;
-    }
-
     extern __shared__ float sdata[];
+    const int row = blockIdx.x;
+    const int tid = threadIdx.x;
+    const size_t offset = (size_t)blockIdx.y * d;
 
-    //get ready for sinkhorn:u= a / (k v)
-    for (int j = tid; j < N; j += blk){
-        local_sum += K[bidx*N+j] * v[j];
-    }//calculate one column
-
-    sdata[tid]=local_sum;//get one element of one column
-    __syncthreads();
-
-    
-    for (int stride=blk/2; stride > 0; stride /= 2){
-        if (tid < stride){
-        sdata[tid]+=sdata[tid+stride];
-        }
-        __syncthreads();
-    }
-
-    if (tid == 0){
-        u[bidx] = a[bidx] / (sdata[0]+1e-12f);
-    }
-}
-
-
-__global__ void v_update(
-    const float* a,
-    const float* b,
-    const float* K,
-    float* u,
-    float* v,
-    int N
-){
-    int bidx = blockIdx.x;
-    int blk = blockDim.x;
-    int tid = threadIdx.x;
-    int total = N;
     float local_sum = 0.0f;
-
-    if(bidx >= total){
-        return;
+    for (int j = tid; j < d; j += blockDim.x){
+        local_sum += mat[(size_t)row * d + j] * scale[offset + j];
     }
-
-    extern __shared__ float sdata[];
-
-    //get ready for sinkhorn:u= b / (k^t u)
-    for (int j = tid; j < N; j += blk){
-        local_sum += K[bidx+j*N] * u[j];
-    }//calculate one column
-
-    sdata[tid]=local_sum;//get one element of one column
-    __syncthreads();
-
-    
-    for (int stride=blk/2; stride > 0; stride /= 2){
-        if (tid < stride){
-            sdata[tid]+=sdata[tid+stride];
-        }
-        __syncthreads();
-    }
-
-    if (tid == 0){
-        v[bidx] = b[bidx] / (sdata[0]+1e-12f);
-    }
-}
-
-
-// Update one log-domain Sinkhorn scaling vector.
-//
-// Each block owns one row i and computes:
-//   log_u[i] = log_a[i] - logsumexp_j(-reg * M[i, j] + log_v[j])
-// The logsumexp is evaluated with a two-pass block reduction:
-// first max(z_j), then sum(exp(z_j - max)).
-__global__ void u_update_log(
-    const float* log_a,
-    const float* M,
-    float* log_u,
-    const float* log_v,
-    int N,
-    float reg
-){
-    //sinkhorn for log domain iteration
-    int blk = blockDim.x;
-    int bidx = blockIdx.x;
-    int tid = threadIdx.x;
-    int total = N;
-    float local_max = -INFINITY;
-
-    if(bidx >= total){
-        return;
-    }
-
-    extern __shared__ float sdata[];
-
-    //generate each log_kv
-    for (int j = tid; j < N; j += blk){
-        float log_k = - reg * M[bidx*N+j];
-        if(local_max <= (log_k + log_v[j])){
-            local_max = log_k + log_v[j];
-        }     
-    }
-
-    sdata[tid] = local_max;
-    __syncthreads();
-
-    //first reduction to find max(log_k+log_v)
-    for (int stride=blk/2; stride > 0; stride /= 2){
-        if (tid < stride){
-            sdata[tid] = fmaxf(sdata[tid], sdata[tid + stride]);//get larger num
-        }
-        __syncthreads();
-    }
-
-    float row_max = sdata[0];
-    __syncthreads();
-    float local_sum = 0.0f;
-
-    //log-domain iteration log_u = log_a - LSE(log_k+log_v)
-    for (int j = tid; j < N; j += blk){
-        float log_k = - reg * M[bidx*N+j];
-        local_sum += expf(log_k + log_v[j] - row_max);
-    }
-
     sdata[tid] = local_sum;
     __syncthreads();
-
-    for (int stride=blk/2; stride > 0; stride /= 2){
-        if (tid < stride){
-            sdata[tid] += sdata[tid + stride];
-        }
+    for (int stride = blockDim.x / 2; stride > 0; stride /= 2){
+        if (tid < stride) sdata[tid] += sdata[tid + stride];
         __syncthreads();
     }
 
-    if (tid == 0){
-        log_u[bidx] = log_a[bidx] - row_max - logf(sdata[0]);
-    }
-
+    if (tid == 0) out[offset + row] = num[offset + row] / (sdata[0] + 1e-12f);
 }
 
-__global__ void v_update_log(
-    const float* log_b,
-    const float* M_T,
-    const float* log_u,
-    float* log_v,
-    int N,
-    float reg
+// One log-domain Sinkhorn update, one block per (row, batch) pair:
+//   log_out[b, i] = log_num[b, i] - logsumexp_j(-cost[i, j] / eps + log_scale[b, j])
+// evaluated with a two-pass block reduction (max, then sum of shifted exps).
+// The u-update passes (log_a, M, log_v); the v-update passes (log_b, M^T, log_u).
+__global__ void log_scaling_update(
+    const float* __restrict__ log_num,
+    const float* __restrict__ cost,
+    const float* __restrict__ log_scale,
+    float* __restrict__ log_out,
+    int d,
+    float inv_eps
 ){
-    //sinkhorn for log domain iteration
-    int blk = blockDim.x;
-    int bidx = blockIdx.x;
-    int tid = threadIdx.x;
-    int total = N;
-    float local_max = -INFINITY;
-
-    if(bidx >= total){
-        return;
-    }
-
     extern __shared__ float sdata[];
+    const int row = blockIdx.x;
+    const int tid = threadIdx.x;
+    const size_t offset = (size_t)blockIdx.y * d;
 
-    //generate each log_kTu
-    for (int j = tid; j < N; j += blk){
-        float log_k = - reg * M_T[bidx*N+j];
-        if(local_max <= (log_k + log_u[j])){
-            local_max = log_k + log_u[j];
-        }     
+    float local_max = -INFINITY;
+    for (int j = tid; j < d; j += blockDim.x){
+        local_max = fmaxf(local_max, log_scale[offset + j] - cost[(size_t)row * d + j] * inv_eps);
     }
-
     sdata[tid] = local_max;
     __syncthreads();
-
-    //first reduction to find max(log_k+log_v)
-    for (int stride=blk/2; stride > 0; stride /= 2){
-        if (tid < stride){
-            sdata[tid] = fmaxf(sdata[tid], sdata[tid + stride]);//get larger num
-        }
+    for (int stride = blockDim.x / 2; stride > 0; stride /= 2){
+        if (tid < stride) sdata[tid] = fmaxf(sdata[tid], sdata[tid + stride]);
         __syncthreads();
     }
-
-    float row_max = sdata[0];
+    const float row_max = sdata[0];
     __syncthreads();
+
     float local_sum = 0.0f;
-
-    //log-domain iteration log_v = log_b - LSE(log_k+log_u)
-    for (int j = tid; j < N; j += blk){
-        float log_k = - reg * M_T[bidx*N+j];
-        local_sum += expf(log_k + log_u[j] - row_max);
+    for (int j = tid; j < d; j += blockDim.x){
+        local_sum += expf(log_scale[offset + j] - cost[(size_t)row * d + j] * inv_eps - row_max);
     }
-
     sdata[tid] = local_sum;
     __syncthreads();
-
-    for (int stride=blk/2; stride > 0; stride /= 2){
-        if (tid < stride){
-            sdata[tid] += sdata[tid + stride];
-        }
+    for (int stride = blockDim.x / 2; stride > 0; stride /= 2){
+        if (tid < stride) sdata[tid] += sdata[tid + stride];
         __syncthreads();
     }
 
+    // row_max == -inf means the opposite marginal is all zero; pin the
+    // potential instead of propagating -inf - (-inf) = NaN.
     if (tid == 0){
-        log_v[bidx] = log_b[bidx] - row_max - logf(sdata[0]);
+        log_out[offset + row] = row_max == -INFINITY
+            ? -INFINITY
+            : log_num[offset + row] - row_max - logf(sdata[0]);
     }
-
 }
+
+void check_input(const torch::Tensor& t, int64_t numel, const char* name){
+    TORCH_CHECK(t.is_cuda(), name, " must be a CUDA tensor");
+    TORCH_CHECK(t.scalar_type() == torch::kFloat32, name, " must be float32");
+    TORCH_CHECK(t.is_contiguous(), name, " must be contiguous");
+    TORCH_CHECK(t.numel() == numel, name, " must have ", numel, " elements, got ", t.numel());
+}
+
+// Validate batched (n, d) vectors against a shared (d, d) matrix and return
+// the launch grid: one block per (row, batch) pair.
+dim3 make_grid(const torch::Tensor& u, const torch::Tensor& mat){
+    TORCH_CHECK(mat.dim() == 2 && mat.size(0) == mat.size(1), "cost/kernel matrix must be square");
+    TORCH_CHECK(u.dim() == 2 && u.size(1) == mat.size(0),
+                "scaling vectors must be (n, d) with d matching the matrix");
+    return dim3(static_cast<unsigned>(u.size(1)), static_cast<unsigned>(u.size(0)));
+}
+
+}  // namespace
 
 std::tuple<torch::Tensor, torch::Tensor> sinkhorn_fastiter(
-    const torch::Tensor source,
-    const torch::Tensor target,
-    const torch::Tensor k,
+    const torch::Tensor& a,
+    const torch::Tensor& b,
+    const torch::Tensor& K,
+    const torch::Tensor& K_T,
     torch::Tensor u,
     torch::Tensor v,
-    int itrstep,
-    int N
+    int64_t n_iter
 ){
-    int threads = 256;
-    int blocks = N;
-    int shared_memory = threads * sizeof(float);
+    const dim3 grid = make_grid(u, K);
+    const int64_t d = K.size(0);
+    check_input(a, u.numel(), "a");
+    check_input(b, u.numel(), "b");
+    check_input(K, d * d, "K");
+    check_input(K_T, d * d, "K_T");
+    check_input(u, u.numel(), "u");
+    check_input(v, u.numel(), "v");
 
-    for (int i = 0; i < itrstep; i++){
-        u_update<<<blocks, threads, shared_memory>>>(
-            source.data_ptr<float>(),
-            target.data_ptr<float>(),
-            k.data_ptr<float>(),
-            u.data_ptr<float>(),
-            v.data_ptr<float>(),
-            N
-        );
-        v_update<<<blocks, threads, shared_memory>>>(
-            source.data_ptr<float>(),
-            target.data_ptr<float>(),
-            k.data_ptr<float>(),
-            u.data_ptr<float>(),
-            v.data_ptr<float>(),
-            N
-        );
+    const at::cuda::CUDAGuard guard(u.device());
+    const auto stream = at::cuda::getCurrentCUDAStream();
+    const int shmem = kThreads * sizeof(float);
+
+    for (int64_t i = 0; i < n_iter; i++){
+        scaling_update<<<grid, kThreads, shmem, stream>>>(
+            a.data_ptr<float>(), K.data_ptr<float>(), v.data_ptr<float>(),
+            u.data_ptr<float>(), static_cast<int>(d));
+        scaling_update<<<grid, kThreads, shmem, stream>>>(
+            b.data_ptr<float>(), K_T.data_ptr<float>(), u.data_ptr<float>(),
+            v.data_ptr<float>(), static_cast<int>(d));
     }
-return std::make_tuple(u, v);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+
+    return std::make_tuple(u, v);
 }
 
 std::tuple<torch::Tensor, torch::Tensor> sinkhorn_logiter(
-    const torch::Tensor log_a,
-    const torch::Tensor log_b,
-    const torch::Tensor M,
-    const torch::Tensor M_T,
+    const torch::Tensor& log_a,
+    const torch::Tensor& log_b,
+    const torch::Tensor& M,
+    const torch::Tensor& M_T,
     torch::Tensor log_u,
     torch::Tensor log_v,
-    int itrstep,
-    int N,
-    float reg
+    int64_t n_iter,
+    double epsilon
 ){
-    int threads = 256;
-    int blocks = N;
-    int shared_memory = threads * sizeof(float);
+    TORCH_CHECK(epsilon > 0, "epsilon must be positive, got ", epsilon);
+    const dim3 grid = make_grid(log_u, M);
+    const int64_t d = M.size(0);
+    check_input(log_a, log_u.numel(), "log_a");
+    check_input(log_b, log_u.numel(), "log_b");
+    check_input(M, d * d, "M");
+    check_input(M_T, d * d, "M_T");
+    check_input(log_u, log_u.numel(), "log_u");
+    check_input(log_v, log_u.numel(), "log_v");
 
-    for (int i = 0; i < itrstep; i++){
-        u_update_log<<<blocks, threads, shared_memory>>>(
-            log_a.data_ptr<float>(),
-            M.data_ptr<float>(),
-            log_u.data_ptr<float>(),
-            log_v.data_ptr<float>(),
-            N,
-            reg
-        );
-        v_update_log<<<blocks, threads, shared_memory>>>(
-            log_b.data_ptr<float>(),
-            M_T.data_ptr<float>(),
-            log_u.data_ptr<float>(),
-            log_v.data_ptr<float>(),
-            N,
-            reg
-        );
+    const at::cuda::CUDAGuard guard(log_u.device());
+    const auto stream = at::cuda::getCurrentCUDAStream();
+    const int shmem = kThreads * sizeof(float);
+    const float inv_eps = static_cast<float>(1.0 / epsilon);
+
+    for (int64_t i = 0; i < n_iter; i++){
+        log_scaling_update<<<grid, kThreads, shmem, stream>>>(
+            log_a.data_ptr<float>(), M.data_ptr<float>(), log_v.data_ptr<float>(),
+            log_u.data_ptr<float>(), static_cast<int>(d), inv_eps);
+        log_scaling_update<<<grid, kThreads, shmem, stream>>>(
+            log_b.data_ptr<float>(), M_T.data_ptr<float>(), log_u.data_ptr<float>(),
+            log_v.data_ptr<float>(), static_cast<int>(d), inv_eps);
     }
-return std::make_tuple(log_u, log_v);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+
+    return std::make_tuple(log_u, log_v);
 }

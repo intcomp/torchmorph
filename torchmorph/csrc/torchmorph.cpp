@@ -43,29 +43,25 @@ std::tuple<torch::Tensor, torch::Tensor> bfdt_cuda(
 
 // Optimal Transport functions
 std::tuple<torch::Tensor, torch::Tensor> sinkhorn_fastiter(
-    const torch::Tensor source,
-    const torch::Tensor target,
-    const torch::Tensor k,
+    const torch::Tensor& a,
+    const torch::Tensor& b,
+    const torch::Tensor& K,
+    const torch::Tensor& K_T,
     torch::Tensor u,
     torch::Tensor v,
-    int itrstep,
-    int N
+    int64_t n_iter
 );
 
 std::tuple<torch::Tensor, torch::Tensor> sinkhorn_logiter(
-    const torch::Tensor log_a,
-    const torch::Tensor log_b,
-    const torch::Tensor M,
-    const torch::Tensor M_T,
+    const torch::Tensor& log_a,
+    const torch::Tensor& log_b,
+    const torch::Tensor& M,
+    const torch::Tensor& M_T,
     torch::Tensor log_u,
     torch::Tensor log_v,
-    int itrstep,
-    int N,
-    float reg
+    int64_t n_iter,
+    double epsilon
 );
-
-
-
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("grey_erosion_cuda", &grey_erosion_cuda,
@@ -110,26 +106,24 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 
     // Optimal Transport
     m.def("sinkhorn_fastiter", &sinkhorn_fastiter,
-          "Sinkhorn Fast Iteration CUDA",
-          py::arg("source"),
-          py::arg("target"),
-          py::arg("k"),
+          "Sinkhorn scaling-form iterations (CUDA)",
+          py::arg("a"),
+          py::arg("b"),
+          py::arg("K"),
+          py::arg("K_T"),
           py::arg("u"),
           py::arg("v"),
-          py::arg("itrstep"),
-          py::arg("N"));
+          py::arg("n_iter"));
 
     m.def("sinkhorn_logiter", &sinkhorn_logiter,
-          "Sinkhorn Log-Domain Iteration CUDA",
+          "Sinkhorn log-domain iterations (CUDA)",
           py::arg("log_a"),
           py::arg("log_b"),
           py::arg("M"),
           py::arg("M_T"),
           py::arg("log_u"),
           py::arg("log_v"),
-          py::arg("itrstep"),
-          py::arg("N"),
-          py::arg("reg")
-    );
+          py::arg("n_iter"),
+          py::arg("epsilon"));
 }
 
