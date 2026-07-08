@@ -1,4 +1,3 @@
-from .add import add
 from .distance_transform import (
     brute_force_distance_transform,
     chamfer_distance_transform,
@@ -23,7 +22,6 @@ from .morphology import (
 )
 
 __all__ = [
-    "add",
     "euclidean_distance_transform",
     "chamfer_distance_transform",
     "brute_force_distance_transform",

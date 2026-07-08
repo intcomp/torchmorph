@@ -1,7 +1,5 @@
 #include <torch/extension.h>
 
-torch::Tensor add_cuda(torch::Tensor input, float scalar);
-
 torch::Tensor grey_erosion_cuda(
     torch::Tensor input,
     torch::Tensor structure,
@@ -59,8 +57,6 @@ std::tuple<torch::Tensor, torch::Tensor> bfdt_cuda(
 
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def("add_cuda", &add_cuda, "Add tensor with scalar");
-
     m.def("grey_erosion_cuda", &grey_erosion_cuda,
           "N-dimensional fused grey erosion",
           py::arg("input"),
@@ -78,7 +74,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           py::arg("origin"),
           py::arg("mode"),
           py::arg("cval"));
-
+    
     m.def("binary_erosion_cuda", &binary_erosion_cuda,
           "N-dimensional fused binary erosion",
           py::arg("input"),
