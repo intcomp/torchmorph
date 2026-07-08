@@ -22,21 +22,63 @@ def _use_fused_kernels(t: Tensor) -> bool:
     return t.is_cuda and t.dtype == torch.float32
 
 
+def _transpose_or_self(matrix: Tensor) -> Tensor:
+    """Return the contiguous transpose, reusing the input when it is symmetric.
+
+    Cost matrices from build_cost_matrix are always symmetric, so this
+    usually saves a (d, d) copy.
+    """
+    return matrix if torch.equal(matrix, matrix.mT) else matrix.mT.contiguous()
+
+
+_GRAPH_MIN_ITER = 100  # below this, plain launches beat the graph-capture setup cost
+_GRAPH_CHUNK = 25
+
+
+def _run_fused(launch, max_iter, device):
+    """Run `launch(k)`, which enqueues k in-place Sinkhorn iterations, max_iter times in total.
+
+    Long runs are launch-latency-bound (two tiny kernels per iteration), so a
+    chunk of iterations is captured into a CUDA graph once and replayed. The
+    iterations are fixed-point steps on ping-pong buffers, so a fallback that
+    runs extra iterations is always safe.
+    """
+    if max_iter < _GRAPH_MIN_ITER or torch.cuda.is_current_stream_capturing():
+        launch(max_iter)
+        return
+    try:
+        with torch.cuda.device(device):
+            # Warm up on a side stream (required before capture), doing the
+            # first chunk of real iterations in the process.
+            side_stream = torch.cuda.Stream()
+            side_stream.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(side_stream):
+                launch(_GRAPH_CHUNK)
+            torch.cuda.current_stream().wait_stream(side_stream)
+
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph):
+                launch(_GRAPH_CHUNK)
+            for _ in range(max_iter // _GRAPH_CHUNK - 1):
+                graph.replay()
+            remainder = max_iter % _GRAPH_CHUNK
+            if remainder:
+                launch(remainder)
+    except RuntimeError:
+        launch(max_iter)  # graphs unavailable; extra iterations are harmless
+
+
 def _scaling_iterations(a, b, cost_matrix, epsilon, max_iter, threshold):
     """Plain scaling-form Sinkhorn on (n, d) marginals; returns (log_u, log_v)."""
     K = torch.exp(-cost_matrix / epsilon)
     if _use_fused_kernels(a):
         from torchmorph import _C
 
-        u, v = _C.sinkhorn_fastiter(
-            a.contiguous(),
-            b.contiguous(),
-            K,
-            K.mT.contiguous(),
-            torch.ones_like(a),
-            torch.ones_like(b),
-            max_iter,
-        )
+        a, b = a.contiguous(), b.contiguous()
+        K_T = _transpose_or_self(K)
+        u = torch.ones_like(a)
+        v = torch.ones_like(b)
+        _run_fused(lambda k: _C.sinkhorn_fastiter(a, b, K, K_T, u, v, k), max_iter, a.device)
         return u.log(), v.log()
 
     u = torch.ones_like(a)
@@ -57,16 +99,18 @@ def _log_iterations(a, b, cost_matrix, epsilon, max_iter, threshold):
     if _use_fused_kernels(a):
         from torchmorph import _C
 
-        return _C.sinkhorn_logiter(
-            log_a.contiguous(),
-            log_b.contiguous(),
-            cost_matrix,
-            cost_matrix.mT.contiguous(),
-            torch.zeros_like(a),
-            torch.zeros_like(b),
+        log_a, log_b = log_a.contiguous(), log_b.contiguous()
+        cost_T = _transpose_or_self(cost_matrix)
+        log_u = torch.zeros_like(a)
+        log_v = torch.zeros_like(b)
+        _run_fused(
+            lambda k: _C.sinkhorn_logiter(
+                log_a, log_b, cost_matrix, cost_T, log_u, log_v, k, epsilon
+            ),
             max_iter,
-            epsilon,
+            a.device,
         )
+        return log_u, log_v
 
     log_K = -cost_matrix / epsilon
     log_u = torch.zeros_like(a)

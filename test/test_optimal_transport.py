@@ -153,13 +153,14 @@ def test_plan_matches_pot_sinkhorn_grid_cost(log_space, device):
 
 
 @pytest.mark.parametrize("log_space", LOG_SPACE)
-def test_fused_cuda_kernels_match_cpu(log_space):
+@pytest.mark.parametrize("n", [1, 3, 20])  # single-item, partial-tile, and multi-tile batches
+def test_fused_cuda_kernels_match_cpu(log_space, n):
     """CUDA float32 inputs dispatch to the fused kernels; results must match CPU."""
     _require_cuda()
     solver = SinkhornSolver(epsilon=1.5, max_iter=1000, log_space=log_space)
 
-    source = _make_positive((3, 6), device="cpu", seed=503)
-    target = _make_positive((3, 6), device="cpu", seed=607)
+    source = _make_positive((n, 6), device="cpu", seed=503)
+    target = _make_positive((n, 6), device="cpu", seed=607)
 
     cpu_distance = solver(source, target)
     cpu_plan = solver.plan(source, target)
@@ -172,6 +173,20 @@ def test_fused_cuda_kernels_match_cpu(log_space):
     assert torch.allclose(cuda_plan.cpu(), cpu_plan, rtol=1e-4, atol=1e-5)
     assert torch.allclose(cuda_f.cpu(), cpu_f, rtol=1e-4, atol=1e-4)
     assert torch.allclose(cuda_g.cpu(), cpu_g, rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.parametrize("log_space", LOG_SPACE)
+def test_fused_short_run_without_cuda_graph_matches_cpu(log_space):
+    """max_iter below the CUDA-graph threshold takes the plain-launch fused path."""
+    _require_cuda()
+    solver = SinkhornSolver(epsilon=1.5, max_iter=60, log_space=log_space)
+
+    source = _make_positive((2, 6), device="cpu", seed=1409)
+    target = _make_positive((2, 6), device="cpu", seed=1423)
+
+    cpu_distance = solver(source, target)
+    cuda_distance = solver(source.cuda(), target.cuda())
+    assert torch.allclose(cuda_distance.cpu(), cpu_distance, rtol=1e-4, atol=1e-5)
 
 
 @pytest.mark.parametrize("log_space", LOG_SPACE)
