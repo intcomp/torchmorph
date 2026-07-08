@@ -5,23 +5,23 @@ from torch.utils import benchmark
 from torchmorph import SinkhornSolver, build_cost_matrix
 
 
-def _grid_problem(n, H, W, epsilon, max_iter, seed=42):
-    """Random (n, H*W) marginals with a 2-D grid cost matrix, preprocessed."""
+def _grid_problem(n, H, W, epsilon, max_iter, log_space=False, seed=42):
+    """Random (n, H*W) marginals with a 2-D grid cost matrix."""
     device = "cuda" if torch.cuda.is_available() else "cpu"
     torch.manual_seed(seed)
     source = torch.rand(n, H * W, device=device)
     target = torch.rand(n, H * W, device=device)
-    solver = SinkhornSolver(epsilon=epsilon, max_iter=max_iter, device=device)
-    source, target, cost_matrix = solver.data_preprocess(
-        source, target, cost_matrix=build_cost_matrix((H, W), device=device)
-    )
+    cost_matrix = build_cost_matrix((H, W), device=device)
+    solver = SinkhornSolver(epsilon=epsilon, max_iter=max_iter, log_space=log_space)
     return solver, source, target, cost_matrix
 
 
-def _time_backend(method_name, solver, source, target, cost_matrix, min_run_time=3):
-    torch.cuda.reset_peak_memory_stats()
+def run_forward_benchmark(n=1, H=32, W=32, epsilon=1.0, max_iter=100, log_space=False):
+    solver, source, target, cost_matrix = _grid_problem(n, H, W, epsilon, max_iter, log_space)
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
     timer = benchmark.Timer(
-        stmt=f"solver.{method_name}(source, target, cost_matrix)",
+        stmt="solver(source, target, cost_matrix)",
         globals={
             "solver": solver,
             "source": source,
@@ -29,29 +29,16 @@ def _time_backend(method_name, solver, source, target, cost_matrix, min_run_time
             "cost_matrix": cost_matrix,
         },
     )
-    result = timer.blocked_autorange(min_run_time=min_run_time)
-    print(f"peak allocated: {torch.cuda.max_memory_allocated() / 1024**2:.2f} MB")
-    print(f"peak reserved:  {torch.cuda.max_memory_reserved() / 1024**2:.2f} MB")
+    result = timer.blocked_autorange(min_run_time=3)
+    if torch.cuda.is_available():
+        print(f"peak allocated: {torch.cuda.max_memory_allocated() / 1024**2:.2f} MB")
+        print(f"peak reserved:  {torch.cuda.max_memory_reserved() / 1024**2:.2f} MB")
     return result
-
-
-def run_sinkhorn_torch_benchmark(n=1, H=32, W=32, epsilon=1.0, max_iter=100):
-    args = _grid_problem(n, H, W, epsilon, max_iter)
-    return _time_backend("sinkhorn_torch", *args)
-
-
-def run_sinkhorn_cuda_benchmark(n=1, H=32, W=32, epsilon=1.0, max_iter=100):
-    args = _grid_problem(n, H, W, epsilon, max_iter)
-    return _time_backend("sinkhorn_cuda", *args)
-
-
-def run_sinkhorn_log_benchmark(n=1, H=32, W=32, epsilon=1.0, max_iter=100):
-    args = _grid_problem(n, H, W, epsilon, max_iter)
-    return _time_backend("sinkhorn_log_cuda", *args)
 
 
 def run_pot_sinkhorn_benchmark(H=32, W=32, epsilon=1.0, max_iter=100):
     solver, source, target, cost_matrix = _grid_problem(1, H, W, epsilon, max_iter)
+    source, target, cost_matrix = solver.data_preprocess(source, target, cost_matrix)
     timer = benchmark.Timer(
         stmt="ot.sinkhorn(source, target, M, reg=epsilon, numItermax=max_iter, stopThr=1e-5)",
         globals={
@@ -69,28 +56,27 @@ def run_pot_sinkhorn_benchmark(H=32, W=32, epsilon=1.0, max_iter=100):
 @torch.no_grad()
 def run_sinkhorn_relative_error(H=32, W=32, epsilon=1.0, max_iter=100):
     solver, source, target, cost_matrix = _grid_problem(1, H, W, epsilon, max_iter)
-    out = solver.solve(source, target, cost_matrix=cost_matrix, return_plan=True)
-    ot_plan = ot.sinkhorn(
-        source[0], target[0], cost_matrix, reg=epsilon, numItermax=max_iter, stopThr=1e-5
-    )
-    return torch.linalg.norm(out["plan"][0] - ot_plan) / torch.clamp(
-        torch.linalg.norm(ot_plan), min=1e-12
-    )
+    plan = solver.plan(source, target, cost_matrix)
+    a, b, cost_matrix = solver.data_preprocess(source, target, cost_matrix)
+    ot_plan = ot.sinkhorn(a[0], b[0], cost_matrix, reg=epsilon, numItermax=max_iter, stopThr=1e-5)
+    return torch.linalg.norm(plan[0] - ot_plan) / torch.clamp(torch.linalg.norm(ot_plan), min=1e-12)
 
 
 def reference_error_check(size=32, epsilon=10.0, max_iter=200, verbose=False):
-    """Compare log-domain CUDA gradients against POT's sinkhorn_log potentials."""
+    """Compare log-space fused-kernel potentials against POT's sinkhorn_log."""
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA device not available.")
-    solver, source, target, cost_matrix = _grid_problem(1, size, size, epsilon, max_iter, seed=2)
+    solver, source, target, cost_matrix = _grid_problem(
+        1, size, size, epsilon, max_iter, log_space=True, seed=2
+    )
 
-    log_u, log_v = solver.sinkhorn_log_cuda(source, target, cost_matrix)
-    grad_f, grad_g = solver.gradient(log_u, log_v)
+    grad_f, grad_g = solver.potentials(source, target, cost_matrix)
     grad_f, grad_g = grad_f[0], grad_g[0]
 
+    a, b, cost_matrix = solver.data_preprocess(source, target, cost_matrix)
     _, log = ot.bregman.sinkhorn_log(
-        source[0],
-        target[0],
+        a[0],
+        b[0],
         cost_matrix,
         reg=epsilon,
         numItermax=max_iter,

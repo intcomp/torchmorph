@@ -1,7 +1,7 @@
 from typing import Optional
 
 import torch
-from torch import Tensor
+from torch import Tensor, nn
 
 
 def build_cost_matrix(shape, p=2, device=None) -> Tensor:
@@ -18,18 +18,112 @@ def build_cost_matrix(shape, p=2, device=None) -> Tensor:
     return torch.cdist(coords, coords, p=p)
 
 
-class SinkhornSolver:
-    """Entropy-regularized balanced optimal transport between batched histograms.
+def _use_fused_kernels(t: Tensor) -> bool:
+    return t.is_cuda and t.dtype == torch.float32
 
-    Every method takes source and target as (n, d) tensors: n distributions of
-    d bins each, sharing one (d, d) cost matrix. The standard convention
-    K = exp(-C / epsilon) is used: smaller epsilon means weaker blurring and a
-    sharper transport plan. All backends return the log scaling vectors
-    (log_u, log_v); the dual potentials are f = epsilon * log_u and
-    g = epsilon * log_v.
+
+def _scaling_iterations(a, b, cost_matrix, epsilon, max_iter, threshold):
+    """Plain scaling-form Sinkhorn on (n, d) marginals; returns (log_u, log_v)."""
+    K = torch.exp(-cost_matrix / epsilon)
+    if _use_fused_kernels(a):
+        from torchmorph import _C
+
+        u, v = _C.sinkhorn_fastiter(
+            a.contiguous(),
+            b.contiguous(),
+            K,
+            K.mT.contiguous(),
+            torch.ones_like(a),
+            torch.ones_like(b),
+            max_iter,
+        )
+        return u.log(), v.log()
+
+    u = torch.ones_like(a)
+    v = torch.ones_like(b)
+    for i in range(max_iter):
+        u_prev = u
+        u = a / (v @ K.mT + 1e-12)
+        v = b / (u @ K + 1e-12)
+        if threshold > 0 and i % 10 == 0:
+            if (u - u_prev).abs().sum(dim=-1).max() <= threshold:
+                break
+    return u.log(), v.log()
+
+
+def _log_iterations(a, b, cost_matrix, epsilon, max_iter, threshold):
+    """Log-domain Sinkhorn on (n, d) marginals; returns (log_u, log_v)."""
+    log_a, log_b = a.log(), b.log()
+    if _use_fused_kernels(a):
+        from torchmorph import _C
+
+        return _C.sinkhorn_logiter(
+            log_a.contiguous(),
+            log_b.contiguous(),
+            cost_matrix,
+            cost_matrix.mT.contiguous(),
+            torch.zeros_like(a),
+            torch.zeros_like(b),
+            max_iter,
+            epsilon,
+        )
+
+    log_K = -cost_matrix / epsilon
+    log_u = torch.zeros_like(a)
+    log_v = torch.zeros_like(b)
+    for i in range(max_iter):
+        log_u_prev = log_u
+        log_u = log_a - torch.logsumexp(log_K + log_v.unsqueeze(-2), dim=-1)
+        log_v = log_b - torch.logsumexp(log_K.mT + log_u.unsqueeze(-2), dim=-1)
+        if threshold > 0 and i % 10 == 0:
+            if (log_u - log_u_prev).abs().sum(dim=-1).max() <= threshold:
+                break
+    return log_u, log_v
+
+
+class _SinkhornDistance(torch.autograd.Function):
+    """Transport distance <P, C> with envelope-theorem gradients.
+
+    The backward pass returns the centered dual potentials, i.e. the exact
+    gradients of the entropic OT cost w.r.t. the (normalized) marginals.
     """
 
-    def __init__(self, epsilon=1.0, max_iter=100, threshold=0.0, p=2, device=None):
+    @staticmethod
+    def forward(ctx, a, b, cost_matrix, epsilon, max_iter, threshold, log_space):
+        iterate = _log_iterations if log_space else _scaling_iterations
+        log_u, log_v = iterate(a, b, cost_matrix, epsilon, max_iter, threshold)
+        plan = torch.exp(log_u.unsqueeze(-1) - cost_matrix / epsilon + log_v.unsqueeze(-2))
+        distance = (plan * cost_matrix).sum(dim=(-2, -1))
+        f = epsilon * log_u
+        g = epsilon * log_v
+        ctx.save_for_backward(f - f.mean(dim=-1, keepdim=True), g - g.mean(dim=-1, keepdim=True))
+        return distance
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        f, g = ctx.saved_tensors
+        grad = grad_output.unsqueeze(-1)
+        return grad * f, grad * g, None, None, None, None, None
+
+
+class SinkhornSolver(nn.Module):
+    """Entropy-regularized balanced optimal transport as a differentiable module.
+
+    forward(source, target, cost_matrix=None) takes two (n, d) batches of
+    histograms sharing one (d, d) cost matrix and returns the (n,) transport
+    distances <P, C>, with K = exp(-C / epsilon). Gradients w.r.t. source and
+    target are the centered dual potentials (envelope theorem), so the module
+    can be used directly as a loss.
+
+    log_space=True runs the iterations entirely in the log domain, which is
+    numerically stable for small epsilon. The implementation is picked from
+    the input automatically: CUDA float32 tensors use the fused kernels,
+    everything else uses pure torch ops (where `threshold` > 0 enables early
+    stopping; the fused kernels always run `max_iter` iterations).
+    """
+
+    def __init__(self, epsilon=1.0, max_iter=100, threshold=0.0, p=2, log_space=False):
+        super().__init__()
         if epsilon <= 0:
             raise ValueError("epsilon must be positive.")
         if max_iter <= 0:
@@ -40,141 +134,72 @@ class SinkhornSolver:
         self.max_iter = max_iter
         self.threshold = threshold
         self.p = p
-        self.device = device
+        self.log_space = log_space
 
-    def data_preprocess(
-        self,
-        source: Tensor,
-        target: Tensor,
-        cost_matrix: Optional[Tensor] = None,
-        dtype=torch.float32,
-    ):
+    def extra_repr(self):
+        return (
+            f"epsilon={self.epsilon}, max_iter={self.max_iter}, "
+            f"threshold={self.threshold}, log_space={self.log_space}"
+        )
+
+    def data_preprocess(self, source, target, cost_matrix: Optional[Tensor] = None):
         """Validate (n, d) inputs, clamp negatives, and normalize each row to unit mass.
 
-        When `cost_matrix` is None the d bins are treated as points on a line.
+        All ops are differentiable, so forward gradients flow through the
+        normalization. When `cost_matrix` is None the d bins are treated as
+        points on a line.
         """
         if source.ndim != 2 or source.shape != target.shape:
             raise ValueError("source and target must be (n, d) tensors of the same shape.")
-        device = torch.device(self.device) if self.device is not None else source.device
+        if not source.is_floating_point():
+            raise ValueError("source and target must be floating-point tensors.")
         d = source.shape[1]
         if cost_matrix is None:
-            cost_matrix = build_cost_matrix((d,), self.p, device)
+            cost_matrix = build_cost_matrix((d,), self.p, source.device)
         elif cost_matrix.shape != (d, d):
             raise ValueError(
                 f"cost_matrix must have shape ({d}, {d}), got {tuple(cost_matrix.shape)}."
             )
+        cost_matrix = cost_matrix.to(device=source.device, dtype=source.dtype).contiguous()
 
-        source = source.to(device=device, dtype=dtype).clamp(min=0)
-        target = target.to(device=device, dtype=dtype).clamp(min=0)
-        cost_matrix = cost_matrix.to(device=device, dtype=dtype).contiguous()
+        source = source.clamp(min=0)
+        target = target.clamp(min=0)
         source = source / source.sum(dim=-1, keepdim=True).clamp(min=1e-12)
         target = target / target.sum(dim=-1, keepdim=True).clamp(min=1e-12)
         return source, target, cost_matrix
 
-    def solve(
-        self,
-        source: Tensor,
-        target: Tensor,
-        cost_matrix: Optional[Tensor] = None,
-        *,
-        backend: str = "torch",
-        return_plan: bool = True,
-        return_potentials: bool = False,
-        return_grad: bool = False,
-        return_distance: bool = False,
-        dtype=torch.float32,
-    ):
-        """Run Sinkhorn end-to-end on (n, d) source and target distributions.
-
-        backend is "torch" (batched matmuls, any device), "cuda" (scaling-form
-        kernel), or "cuda_log" (log-domain kernel, stable for small epsilon).
-        The (n, d, d) plan is always reconstructed in log space.
-        """
-        source, target, cost_matrix = self.data_preprocess(source, target, cost_matrix, dtype)
-        backends = {
-            "torch": self.sinkhorn_torch,
-            "cuda": self.sinkhorn_cuda,
-            "cuda_log": self.sinkhorn_log_cuda,
-        }
-        if backend not in backends:
-            raise ValueError(f"Unknown backend {backend!r}; expected one of {sorted(backends)}.")
-        log_u, log_v = backends[backend](source, target, cost_matrix)
-
-        output = {
-            "source": source,
-            "target": target,
-            "cost_matrix": cost_matrix,
-            "backend": backend,
-        }
-        if return_potentials:
-            output["log_u"], output["log_v"] = log_u, log_v
-        if return_plan or return_distance:
-            plan = torch.exp(log_u.unsqueeze(-1) - cost_matrix / self.epsilon + log_v.unsqueeze(-2))
-            if return_plan:
-                output["plan"] = plan
-            if return_distance:
-                output["distance"] = (plan * cost_matrix).sum(dim=(-2, -1))
-        if return_grad:
-            output["grad_source"], output["grad_target"] = self.gradient(log_u, log_v)
-        return output
-
-    def sinkhorn_torch(self, source: Tensor, target: Tensor, cost_matrix: Tensor):
-        """Batched Sinkhorn in scaling form with dense matmuls.
-
-        Expects preprocessed (n, d) inputs; returns (log_u, log_v).
-        """
-        K = torch.exp(-cost_matrix / self.epsilon)
-        u = torch.ones_like(source)
-        v = torch.ones_like(target)
-        for i in range(self.max_iter):
-            u_prev = u
-            u = source / (v @ K.mT + 1e-12)
-            v = target / (u @ K + 1e-12)
-            if self.threshold > 0 and i % 10 == 0:
-                if (u - u_prev).abs().sum(dim=-1).max() <= self.threshold:
-                    break
-        return u.log(), v.log()
-
-    @torch.no_grad()
-    def sinkhorn_cuda(self, source: Tensor, target: Tensor, cost_matrix: Tensor):
-        """Scaling-form Sinkhorn on the fused CUDA kernel; returns (log_u, log_v)."""
-        from torchmorph import _C
-
-        K = torch.exp(-cost_matrix / self.epsilon)
-        u = torch.ones_like(source)
-        v = torch.ones_like(target)
-        u, v = _C.sinkhorn_fastiter(
-            source.contiguous(), target.contiguous(), K, K.mT.contiguous(), u, v, self.max_iter
-        )
-        return u.log(), v.log()
-
-    @torch.no_grad()
-    def sinkhorn_log_cuda(self, source: Tensor, target: Tensor, cost_matrix: Tensor):
-        """Log-domain Sinkhorn on the fused CUDA kernel; stable for small epsilon.
-
-        Returns (log_u, log_v) without ever leaving log space.
-        """
-        from torchmorph import _C
-
-        log_u = torch.zeros_like(source)
-        log_v = torch.zeros_like(target)
-        return _C.sinkhorn_logiter(
-            source.log().contiguous(),
-            target.log().contiguous(),
+    def forward(self, source: Tensor, target: Tensor, cost_matrix: Optional[Tensor] = None):
+        """(n,) transport distances between the rows of source and target."""
+        source, target, cost_matrix = self.data_preprocess(source, target, cost_matrix)
+        return _SinkhornDistance.apply(
+            source,
+            target,
             cost_matrix,
-            cost_matrix.mT.contiguous(),
-            log_u,
-            log_v,
-            self.max_iter,
             self.epsilon,
+            self.max_iter,
+            self.threshold,
+            self.log_space,
         )
 
-    def gradient(self, log_u: Tensor, log_v: Tensor):
-        """Gradients of the entropic OT cost w.r.t. the marginals.
+    @torch.no_grad()
+    def plan(self, source: Tensor, target: Tensor, cost_matrix: Optional[Tensor] = None):
+        """(n, d, d) transport plans, reconstructed in log space."""
+        source, target, cost_matrix = self.data_preprocess(source, target, cost_matrix)
+        log_u, log_v = self._iterate(source, target, cost_matrix)
+        return torch.exp(log_u.unsqueeze(-1) - cost_matrix / self.epsilon + log_v.unsqueeze(-2))
 
-        These are the dual potentials f = epsilon * log_u and g = epsilon * log_v,
-        centered per distribution to fix the additive gauge freedom.
+    @torch.no_grad()
+    def potentials(self, source: Tensor, target: Tensor, cost_matrix: Optional[Tensor] = None):
+        """Centered dual potentials (f, g), each (n, d).
+
+        These are the gradients of the entropic OT cost w.r.t. the marginals.
         """
+        source, target, cost_matrix = self.data_preprocess(source, target, cost_matrix)
+        log_u, log_v = self._iterate(source, target, cost_matrix)
         f = self.epsilon * log_u
         g = self.epsilon * log_v
         return f - f.mean(dim=-1, keepdim=True), g - g.mean(dim=-1, keepdim=True)
+
+    def _iterate(self, a, b, cost_matrix):
+        iterate = _log_iterations if self.log_space else _scaling_iterations
+        return iterate(a, b, cost_matrix, self.epsilon, self.max_iter, self.threshold)
