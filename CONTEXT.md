@@ -12,6 +12,14 @@ _Avoid_: filter, convolution
 Morphological operations where every non-zero input value is treated as foreground and zero is treated as background.
 _Avoid_: boolean convolution, mask filtering
 
+**Binary Hole Filling**:
+A binary morphology operation that turns background regions not connected to the sample boundary into foreground.
+_Avoid_: hole, fill hole
+
+**Binary Hit-or-Miss**:
+A binary morphology operation that detects locations where foreground and background match paired structuring elements.
+_Avoid_: hit miss, pattern mask
+
 **Grey Morphology**:
 Morphological operations over numeric intensities, where the result depends on ordered values rather than only foreground/background membership.
 _Avoid_: grayscale filter

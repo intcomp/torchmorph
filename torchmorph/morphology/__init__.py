@@ -2,6 +2,8 @@ from .binary import (
     binary_closing,
     binary_dilation,
     binary_erosion,
+    binary_fill_holes,
+    binary_hit_or_miss,
     binary_opening,
     binary_propagation,
 )
@@ -22,6 +24,8 @@ __all__ = [
     "iterate_structure",
     "binary_erosion",
     "binary_dilation",
+    "binary_fill_holes",
+    "binary_hit_or_miss",
     "binary_opening",
     "binary_closing",
     "binary_propagation",

@@ -14,6 +14,8 @@ MIN_RUN_TIME = 1.0
 BINARY_OPERATORS = {
     "erosion": (ndi.binary_erosion, tm.binary_erosion),
     "dilation": (ndi.binary_dilation, tm.binary_dilation),
+    "fill_holes": (ndi.binary_fill_holes, tm.binary_fill_holes),
+    "hit_or_miss": (ndi.binary_hit_or_miss, tm.binary_hit_or_miss),
     "opening": (ndi.binary_opening, tm.binary_opening),
     "closing": (ndi.binary_closing, tm.binary_closing),
     "propagation": (ndi.binary_propagation, tm.binary_propagation),
