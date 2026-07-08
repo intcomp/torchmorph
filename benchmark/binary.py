@@ -16,6 +16,7 @@ BINARY_OPERATORS = {
     "dilation": (ndi.binary_dilation, tm.binary_dilation),
     "opening": (ndi.binary_opening, tm.binary_opening),
     "closing": (ndi.binary_closing, tm.binary_closing),
+    "propagation": (ndi.binary_propagation, tm.binary_propagation),
 }
 
 

@@ -5,6 +5,7 @@ from scipy.ndimage import binary_closing as scipy_binary_closing
 from scipy.ndimage import binary_dilation as scipy_binary_dilation
 from scipy.ndimage import binary_erosion as scipy_binary_erosion
 from scipy.ndimage import binary_opening as scipy_binary_opening
+from scipy.ndimage import binary_propagation as scipy_binary_propagation
 from scipy.ndimage import generate_binary_structure
 
 import torchmorph as tm
@@ -20,11 +21,16 @@ BINARY_OPERATORS = [
     pytest.param(tm.binary_closing, scipy_binary_closing, id="closing"),
 ]
 
+PROPAGATION_OPERATORS = [
+    pytest.param(tm.binary_propagation, scipy_binary_propagation, id="propagation"),
+]
+
 TORCH_OPERATORS = [
     pytest.param(tm.binary_erosion, id="erosion"),
     pytest.param(tm.binary_dilation, id="dilation"),
     pytest.param(tm.binary_opening, id="opening"),
     pytest.param(tm.binary_closing, id="closing"),
+    pytest.param(tm.binary_propagation, id="propagation"),
 ]
 
 CASE_2D = np.array(
@@ -132,6 +138,54 @@ def test_binary_morphology_mask(torch_op, scipy_op, np_input, mask):
     torch.testing.assert_close(result.cpu(), torch.as_tensor(expected))
 
 
+@pytest.mark.parametrize(("torch_op", "scipy_op"), PROPAGATION_OPERATORS)
+@pytest.mark.parametrize(
+    ("np_input", "structure", "origin", "border_value"),
+    [
+        pytest.param(CASE_2D, None, 0, False, id="2d_basic"),
+        pytest.param(CASE_2D, STRUCTURE_2D, 1, True, id="2d_origin_border"),
+        pytest.param(CASE_3D, STRUCTURE_3D_1, 0, False, id="3d_structure_1"),
+        pytest.param(CASE_3D, STRUCTURE_3D_2, 1, True, id="3d_origin_border"),
+        pytest.param(CASE_4D, STRUCTURE_4D, 0, False, id="4d_structure"),
+    ],
+)
+def test_binary_propagation_matches_scipy(
+    torch_op, scipy_op, np_input, structure, origin, border_value
+):
+    result = torch_op(
+        torch.as_tensor(np_input, dtype=torch.float32, device="cuda"),
+        structure=optional_cuda_tensor(structure, torch.bool),
+        origin=origin,
+        border_value=border_value,
+    )
+    expected = apply_scipy_to_batch(
+        np_input,
+        scipy_op,
+        structure=structure,
+        origin=origin,
+        border_value=border_value,
+    )
+    torch.testing.assert_close(result.cpu(), torch.as_tensor(expected))
+
+
+@pytest.mark.parametrize(("torch_op", "scipy_op"), PROPAGATION_OPERATORS)
+@pytest.mark.parametrize(
+    ("np_input", "mask"),
+    [
+        pytest.param(CASE_2D, MASK_2D, id="2d_mask"),
+        pytest.param(CASE_3D, MASK_3D, id="3d_mask"),
+        pytest.param(CASE_4D, MASK_4D, id="4d_mask"),
+    ],
+)
+def test_binary_propagation_mask(torch_op, scipy_op, np_input, mask):
+    result = torch_op(
+        torch.as_tensor(np_input, dtype=torch.float32, device="cuda"),
+        mask=cuda_mask(mask, np_input),
+    )
+    expected = apply_scipy_to_batch(np_input, scipy_op, mask=mask)
+    torch.testing.assert_close(result.cpu(), torch.as_tensor(expected))
+
+
 @pytest.mark.parametrize(("torch_op", "scipy_op"), BINARY_OPERATORS)
 @pytest.mark.parametrize(
     ("np_input", "output_shape"),
@@ -142,6 +196,26 @@ def test_binary_morphology_mask(torch_op, scipy_op, np_input, mask):
     ],
 )
 def test_binary_morphology_output(torch_op, scipy_op, np_input, output_shape):
+    x = torch.as_tensor(np_input, dtype=torch.float32, device="cuda")
+    output = torch.empty_like(x, dtype=torch.bool)
+
+    result = torch_op(x, output=output)
+
+    assert result is output
+    expected = apply_scipy_to_batch(np_input, scipy_op, output=np.empty(output_shape, dtype=bool))
+    torch.testing.assert_close(result.cpu(), torch.as_tensor(expected))
+
+
+@pytest.mark.parametrize(("torch_op", "scipy_op"), PROPAGATION_OPERATORS)
+@pytest.mark.parametrize(
+    ("np_input", "output_shape"),
+    [
+        pytest.param(CASE_2D, (3, 3), id="2d_output"),
+        pytest.param(CASE_3D, (5, 5, 5), id="3d_output"),
+        pytest.param(CASE_4D, (4, 4, 4, 4), id="4d_output"),
+    ],
+)
+def test_binary_propagation_output(torch_op, scipy_op, np_input, output_shape):
     x = torch.as_tensor(np_input, dtype=torch.float32, device="cuda")
     output = torch.empty_like(x, dtype=torch.bool)
 

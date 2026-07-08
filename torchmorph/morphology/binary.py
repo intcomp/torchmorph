@@ -131,6 +131,27 @@ def binary_dilation(
     )
 
 
+def binary_propagation(
+    input: Tensor,
+    structure: Tensor | None = None,
+    mask: Tensor | None = None,
+    output: Tensor | None = None,
+    border_value: bool = False,
+    origin: int | tuple[int, ...] = 0,
+) -> Tensor:
+    """N-dimensional binary propagation for `(B, C, Spatial...)` CUDA tensors."""
+    return _binary_morphology(
+        input,
+        structure,
+        -1,
+        mask,
+        output,
+        border_value,
+        origin,
+        mode="dilation",
+    )
+
+
 def binary_opening(
     input: Tensor,
     structure: Tensor | None = None,
