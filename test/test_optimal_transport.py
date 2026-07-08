@@ -254,7 +254,8 @@ def test_log_space_survives_small_epsilon(device):
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("log_space", LOG_SPACE)
 def test_backward_matches_numeric_directional_derivative(log_space, device):
-    """Autograd through forward() must match a numeric derivative of the entropic cost.
+    """Autograd gradients w.r.t. BOTH source and target must match numeric
+    derivatives of the entropic cost.
 
     Runs in float64, i.e. through the torch paths on both CPU and CUDA.
     """
@@ -263,23 +264,26 @@ def test_backward_matches_numeric_directional_derivative(log_space, device):
     cost_matrix = build_cost_matrix((d,), device=device).double()
 
     source = _make_positive((n, d), device=device, seed=1009).double().requires_grad_(True)
-    target = _make_positive((n, d), device=device, seed=2003).double()
+    target = _make_positive((n, d), device=device, seed=2003).double().requires_grad_(True)
     direction = _make_positive((n, d), device=device, seed=3001).double() - 0.6
 
     solver(source, target, cost_matrix).sum().backward()
-    analytic = (source.grad * direction).sum()
+    assert source.grad is not None and target.grad is not None
 
-    def entropic_cost(x):
-        plan = solver.plan(x, target, cost_matrix)
+    def entropic_cost(src, tgt):
+        plan = solver.plan(src, tgt, cost_matrix)
         entropy = (plan * plan.clamp(min=1e-300).log()).sum()
         return (plan * cost_matrix).sum() + solver.epsilon * entropy
 
     eps_fd = 1e-4
-    raw = source.detach()
-    numeric = (
-        entropic_cost(raw + eps_fd * direction) - entropic_cost(raw - eps_fd * direction)
-    ) / (2 * eps_fd)
-    assert torch.allclose(analytic, numeric, rtol=1e-5, atol=1e-7)
+    src, tgt = source.detach(), target.detach()
+    for grad, plus, minus in [
+        (source.grad, (src + eps_fd * direction, tgt), (src - eps_fd * direction, tgt)),
+        (target.grad, (src, tgt + eps_fd * direction), (src, tgt - eps_fd * direction)),
+    ]:
+        analytic = (grad * direction).sum()
+        numeric = (entropic_cost(*plus) - entropic_cost(*minus)) / (2 * eps_fd)
+        assert torch.allclose(analytic, numeric, rtol=1e-5, atol=1e-7)
 
 
 @pytest.mark.parametrize("log_space", LOG_SPACE)
@@ -292,12 +296,18 @@ def test_backward_through_fused_kernels_matches_cpu(log_space):
     target = _make_positive((3, 6), device="cpu", seed=1217)
 
     cpu_source = source.clone().requires_grad_(True)
-    solver(cpu_source, target).sum().backward()
+    cpu_target = target.clone().requires_grad_(True)
+    solver(cpu_source, cpu_target).sum().backward()
     cuda_source = source.cuda().requires_grad_(True)
-    solver(cuda_source, target.cuda()).sum().backward()
+    cuda_target = target.cuda().requires_grad_(True)
+    solver(cuda_source, cuda_target).sum().backward()
 
-    assert torch.isfinite(cuda_source.grad).all()
-    assert torch.allclose(cuda_source.grad.cpu(), cpu_source.grad, rtol=1e-4, atol=1e-5)
+    for cuda_grad, cpu_grad in [
+        (cuda_source.grad, cpu_source.grad),
+        (cuda_target.grad, cpu_target.grad),
+    ]:
+        assert torch.isfinite(cuda_grad).all()
+        assert torch.allclose(cuda_grad.cpu(), cpu_grad, rtol=1e-4, atol=1e-5)
 
 
 @pytest.mark.parametrize("device", DEVICES)
