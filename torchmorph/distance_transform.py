@@ -1,4 +1,4 @@
-from typing import Optional, Sequence, Tuple, Union
+from collections.abc import Sequence
 
 import torch
 
@@ -7,13 +7,13 @@ from torchmorph import _C
 
 def euclidean_distance_transform(
     input: torch.Tensor,
-    sampling: Optional[Union[float, Sequence[float]]] = None,
+    sampling: float | Sequence[float] | None = None,
     return_distances: bool = True,
     return_indices: bool = False,
-    distances: Optional[torch.Tensor] = None,
-    indices: Optional[torch.Tensor] = None,
+    distances: torch.Tensor | None = None,
+    indices: torch.Tensor | None = None,
     algorithm: str = "exact",
-) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor], None]:
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor] | None:
     """Exact Euclidean Distance Transform (EDT) using Felzenszwalb algorithm.
 
     Args:
@@ -153,9 +153,9 @@ def chamfer_distance_transform(
     metric: str = "chessboard",
     return_distances: bool = True,
     return_indices: bool = False,
-    distances: Optional[torch.Tensor] = None,
-    indices: Optional[torch.Tensor] = None,
-) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor], None]:
+    distances: torch.Tensor | None = None,
+    indices: torch.Tensor | None = None,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor] | None:
     """Chamfer Distance Transform (CDT).
 
     Calculates the distance transform of the input using a chamfer metric.
@@ -265,12 +265,12 @@ def chamfer_distance_transform(
 def brute_force_distance_transform(
     input: torch.Tensor,
     metric: str = "euclidean",
-    sampling: Optional[Union[float, Sequence[float]]] = None,
+    sampling: float | Sequence[float] | None = None,
     return_distances: bool = True,
     return_indices: bool = False,
-    distances: Optional[torch.Tensor] = None,
-    indices: Optional[torch.Tensor] = None,
-) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor], None]:
+    distances: torch.Tensor | None = None,
+    indices: torch.Tensor | None = None,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor] | None:
     """Brute-force distance transform.
 
     Calculates the distance transform of the input using a brute-force algorithm.

@@ -1,29 +1,17 @@
-from .distance_transform import (
-    brute_force_distance_transform,
-    chamfer_distance_transform,
-    euclidean_distance_transform,
-)
-from .morphology import (
-    binary_closing,
-    binary_dilation,
-    binary_erosion,
-    binary_opening,
+from .binary import binary_closing, binary_dilation, binary_erosion, binary_opening
+from .grey import (
     black_tophat,
-    generate_binary_structure,
     grey_closing,
     grey_dilation,
     grey_erosion,
     grey_opening,
-    iterate_structure,
     morphological_gradient,
     morphological_laplace,
     white_tophat,
 )
+from .structure import generate_binary_structure, iterate_structure
 
 __all__ = [
-    "euclidean_distance_transform",
-    "chamfer_distance_transform",
-    "brute_force_distance_transform",
     "generate_binary_structure",
     "iterate_structure",
     "binary_erosion",
