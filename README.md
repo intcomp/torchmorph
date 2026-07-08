@@ -63,16 +63,16 @@ As long as your `nvcc` version matchs your PyTorch CUDA version (e.g., `nvcc 12.
 
 After installation succeeds, verify import and a simple CUDA kernel call:
 
-```bash
+```python
 import torch
 import torchmorph as tm
 
 print(torch.__version__, torch.version.cuda, torch.cuda.is_available())
 
 if torch.cuda.is_available():
-    x = torch.tensor([[1.0, 2.0], [3.0, 4.0]], device="cuda")
-    y = tm.add(x, 1.5)
-    print(y)
+    x = torch.rand(1, 1, 8, 8, device="cuda")
+    y = tm.grey_dilation(x, size=3)
+    print(y.shape)
 else:
     print("CUDA not available; install verified for import only.")
 ```
