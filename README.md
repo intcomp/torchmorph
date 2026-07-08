@@ -42,7 +42,7 @@ The instructions in this section are for **building TorchMorph from this reposit
 3. Ensure you have a compatible `nvcc` compiler.
    ```bash
    conda install -c nvidia -c conda-forge \
-  cuda-version=12.4 cuda-cudart=12.4 cuda-cudart-dev=12.4 cuda-nvcc=12.4 cuda-cccl=12.4
+     cuda-version=12.4 cuda-cudart=12.4 cuda-cudart-dev=12.4 cuda-nvcc=12.4 cuda-cccl=12.4
    ```
 
 4. Install TorchMorph's dependencies and build the extension:
