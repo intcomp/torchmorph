@@ -74,7 +74,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           py::arg("origin"),
           py::arg("mode"),
           py::arg("cval"));
-    
+
     m.def("binary_erosion_cuda", &binary_erosion_cuda,
           "N-dimensional fused binary erosion",
           py::arg("input"),
@@ -96,7 +96,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           py::arg("return_distances") = true,
           py::arg("return_indices") = false,
           py::arg("algorithm") = "exact");
-          
+
     m.def("cdt_cuda", &cdt_cuda,
           "Chessboard/Manhattan distance transform",
           py::arg("input"),

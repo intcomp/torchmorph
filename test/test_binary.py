@@ -1,3 +1,5 @@
+import importlib
+
 import numpy as np
 import pytest
 import torch
@@ -16,38 +18,44 @@ pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="CUDA is required for torchmorph tests"
 )
 
-BINARY_OPERATORS = [
-    pytest.param(tm.binary_erosion, scipy_binary_erosion, id="erosion"),
-    pytest.param(tm.binary_dilation, scipy_binary_dilation, id="dilation"),
-    pytest.param(tm.binary_opening, scipy_binary_opening, id="opening"),
-    pytest.param(tm.binary_closing, scipy_binary_closing, id="closing"),
+OPERATOR_CASES = [
+    ("erosion", tm.binary_erosion, scipy_binary_erosion, {"binary", "torch", "masked", "all"}),
+    (
+        "dilation",
+        tm.binary_dilation,
+        scipy_binary_dilation,
+        {"binary", "torch", "masked", "all"},
+    ),
+    ("opening", tm.binary_opening, scipy_binary_opening, {"binary", "torch", "masked", "all"}),
+    ("closing", tm.binary_closing, scipy_binary_closing, {"binary", "torch", "masked", "all"}),
+    (
+        "propagation",
+        tm.binary_propagation,
+        scipy_binary_propagation,
+        {"propagation", "torch", "masked", "all"},
+    ),
+    ("fill_holes", tm.binary_fill_holes, scipy_binary_fill_holes, {"fill_holes", "torch", "all"}),
+    ("hit_or_miss", tm.binary_hit_or_miss, scipy_binary_hit_or_miss, {"hit_or_miss", "all"}),
 ]
 
-PROPAGATION_OPERATORS = [
-    pytest.param(tm.binary_propagation, scipy_binary_propagation, id="propagation"),
-]
 
-FILL_HOLES_OPERATORS = [
-    pytest.param(tm.binary_fill_holes, scipy_binary_fill_holes, id="fill_holes"),
-]
+def operator_params(group, *, include_scipy=False):
+    params = []
+    for name, torch_op, scipy_op, groups in OPERATOR_CASES:
+        if group not in groups:
+            continue
+        args = (torch_op, scipy_op) if include_scipy else (torch_op,)
+        params.append(pytest.param(*args, id=name))
+    return params
 
-HIT_OR_MISS_OPERATORS = [
-    pytest.param(tm.binary_hit_or_miss, scipy_binary_hit_or_miss, id="hit_or_miss"),
-]
 
-TORCH_OPERATORS = [
-    pytest.param(tm.binary_erosion, id="erosion"),
-    pytest.param(tm.binary_dilation, id="dilation"),
-    pytest.param(tm.binary_opening, id="opening"),
-    pytest.param(tm.binary_closing, id="closing"),
-    pytest.param(tm.binary_propagation, id="propagation"),
-    pytest.param(tm.binary_fill_holes, id="fill_holes"),
-]
-
-ALL_TORCH_OPERATORS = [
-    *TORCH_OPERATORS,
-    pytest.param(tm.binary_hit_or_miss, id="hit_or_miss"),
-]
+BINARY_OPERATORS = operator_params("binary", include_scipy=True)
+PROPAGATION_OPERATORS = operator_params("propagation", include_scipy=True)
+FILL_HOLES_OPERATORS = operator_params("fill_holes", include_scipy=True)
+HIT_OR_MISS_OPERATORS = operator_params("hit_or_miss", include_scipy=True)
+TORCH_OPERATORS = operator_params("torch")
+ALL_TORCH_OPERATORS = operator_params("all")
+MASKED_TORCH_OPERATORS = operator_params("masked")
 
 CASE_2D = np.array(
     [[[[0, 1, 0], [1, 1, 1], [0, 1, 0]]]],
@@ -360,6 +368,23 @@ def test_binary_hit_or_miss_allows_empty_miss_structure():
 
 
 @pytest.mark.parametrize(
+    ("torch_op", "expected_value"),
+    [
+        pytest.param(tm.binary_erosion, True, id="erosion"),
+        pytest.param(tm.binary_dilation, False, id="dilation"),
+    ],
+)
+def test_binary_morphology_supports_empty_structure(torch_op, expected_value):
+    x = torch.as_tensor(CASE_2D, dtype=torch.float32, device="cuda")
+    structure = torch.zeros((3, 3), dtype=torch.bool, device="cuda")
+
+    result = torch_op(x, structure=structure)
+
+    expected = torch.full_like(x, expected_value, dtype=torch.bool)
+    torch.testing.assert_close(result, expected)
+
+
+@pytest.mark.parametrize(
     ("torch_op", "scipy_op"),
     [
         pytest.param(tm.binary_opening, scipy_binary_opening, id="opening"),
@@ -421,3 +446,76 @@ def test_binary_morphology_uses_input_cuda_device(torch_op):
         x = torch.as_tensor(CASE_2D, dtype=torch.float32, device="cuda:1")
         result = torch_op(x)
     assert result.device == x.device
+
+
+@pytest.mark.parametrize("torch_op", TORCH_OPERATORS)
+@pytest.mark.parametrize("origin", [-2, 2])
+def test_binary_morphology_rejects_invalid_origin_value(torch_op, origin):
+    x = torch.as_tensor(CASE_2D, dtype=torch.float32, device="cuda")
+    with pytest.raises(ValueError, match="invalid origin"):
+        torch_op(x, origin=origin)
+
+
+@pytest.mark.parametrize("torch_op", MASKED_TORCH_OPERATORS)
+def test_binary_morphology_requires_mask_shape_to_match_input(torch_op):
+    x = torch.as_tensor(CASE_2D, dtype=torch.float32, device="cuda")
+    mask = torch.ones(x.shape[-2:], dtype=torch.bool, device="cuda")
+
+    with pytest.raises(ValueError, match="mask shape"):
+        torch_op(x, mask=mask)
+
+
+@pytest.mark.parametrize("torch_op", ALL_TORCH_OPERATORS)
+def test_binary_morphology_requires_output_shape_to_match_input(torch_op):
+    x = torch.as_tensor(CASE_2D, dtype=torch.float32, device="cuda")
+    output = torch.empty((1, 1, 2, 2), dtype=torch.bool, device="cuda")
+
+    with pytest.raises(ValueError, match="output shape"):
+        torch_op(x, output=output)
+
+
+@pytest.mark.parametrize("torch_op", ALL_TORCH_OPERATORS)
+def test_binary_morphology_requires_output_on_input_device(torch_op):
+    x = torch.as_tensor(CASE_2D, dtype=torch.float32, device="cuda")
+    output = torch.empty_like(x, dtype=torch.bool, device="cpu")
+
+    with pytest.raises(ValueError, match="same device"):
+        torch_op(x, output=output)
+
+
+def test_binary_morphology_normalizes_structure_before_iterations(monkeypatch):
+    binary_module = importlib.import_module("torchmorph.morphology.binary")
+    original_step = binary_module._binary_morphology_cuda_step
+    observed_devices = []
+
+    def recording_step(input, structure, border_value, origin, *, mode):
+        observed_devices.append(structure.device.type)
+        return original_step(input, structure, border_value, origin, mode=mode)
+
+    monkeypatch.setattr(binary_module, "_binary_morphology_cuda_step", recording_step)
+    x = torch.as_tensor(CASE_2D, dtype=torch.float32, device="cuda")
+    structure = torch.ones((3, 3), dtype=torch.bool, device="cuda")
+
+    tm.binary_dilation(x, structure=structure, iterations=2)
+
+    assert observed_devices == ["cpu", "cpu"]
+
+
+@pytest.mark.parametrize("spatial_ndim", [1, 8])
+def test_binary_morphology_supports_dimension_range(spatial_ndim):
+    spatial_shape = (2,) * spatial_ndim
+    np_input = np.zeros((1, 1, *spatial_shape), dtype=bool)
+    np_input[(0, 0, *((0,) * spatial_ndim))] = True
+    x = torch.as_tensor(np_input, device="cuda")
+
+    result = tm.binary_dilation(x)
+
+    expected = apply_scipy_to_batch(np_input, scipy_binary_dilation)
+    torch.testing.assert_close(result.cpu(), torch.as_tensor(expected))
+
+
+def test_binary_morphology_rejects_more_than_eight_spatial_dimensions():
+    x = torch.zeros((1, 1, *((1,) * 9)), dtype=torch.bool, device="cuda")
+
+    with pytest.raises(ValueError, match="1 to 8"):
+        tm.binary_dilation(x)
