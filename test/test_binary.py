@@ -439,6 +439,13 @@ def test_binary_morphology_uses_current_cuda_stream(torch_op):
     assert result.device == x.device
 
 
+@pytest.mark.parametrize("torch_op", ALL_TORCH_OPERATORS)
+def test_binary_morphology_is_not_differentiable(torch_op):
+    x = torch.as_tensor(CASE_2D, dtype=torch.float32, device="cuda").requires_grad_()
+    result = torch_op(x)
+    assert not result.requires_grad
+
+
 @pytest.mark.skipif(torch.cuda.device_count() < 2, reason="requires two CUDA devices")
 @pytest.mark.parametrize("torch_op", ALL_TORCH_OPERATORS)
 def test_binary_morphology_uses_input_cuda_device(torch_op):

@@ -79,6 +79,8 @@ def _grey_morphology(
     elif size is not None:
         if isinstance(size, int):
             size = (size,) * spatial_ndim
+        if any(value <= 0 for value in size):
+            raise ValueError("size values must be greater than zero")
         struct = torch.zeros(size, dtype=torch.float32)
     else:
         raise ValueError('At least one of size, footprint, or structure must be specified.')
@@ -313,7 +315,7 @@ def white_tophat(
         cval=cval,
         origin=origin,
     )
-    result = input.float() - opened
+    result = input.detach().float() - opened
     if output is not None:
         output.copy_(result)
         return output
@@ -343,7 +345,7 @@ def black_tophat(
         cval=cval,
         origin=origin,
     )
-    result = closed - input.float()
+    result = closed - input.detach().float()
     if output is not None:
         output.copy_(result)
         return output
@@ -382,7 +384,7 @@ def morphological_laplace(
         cval=cval,
         origin=origin,
     )
-    result = dilated + eroded - 2 * input.float()
+    result = dilated + eroded - 2 * input.detach().float()
     if output is not None:
         output.copy_(result)
         return output
