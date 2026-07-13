@@ -1,4 +1,7 @@
 #include <torch/extension.h>
+#include <c10/cuda/CUDAException.h>
+#include <c10/cuda/CUDAGuard.h>
+#include <c10/cuda/CUDAStream.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <tuple>
@@ -28,25 +31,27 @@ __global__ void cdt_init_kernel(
     int64_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= total_elements) return;
 
-    if (input[tid] == 0.0f) {
-        dist[tid] = 0;
-        if (compute_indices) {
-            int64_t spatial_idx = tid % spatial_elements;
-            int64_t rem = spatial_idx;
-            for (int d = 0; d < spatial_ndim; d++) {
-                int64_t coord = rem / spatial_strides[d];
-                rem = rem % spatial_strides[d];
-                indices[d * total_elements + tid] = (int32_t)coord;
-            }
-        }
-    } else {
-        dist[tid] = CDT_INF_VAL;
-        if (compute_indices) {
-            for (int d = 0; d < spatial_ndim; d++) {
-                indices[d * total_elements + tid] = -1;
-            }
+    dist[tid] = (input[tid] == 0.0f) ? 0 : CDT_INF_VAL;
+
+    if (compute_indices) {
+        int64_t spatial_idx = tid % spatial_elements;
+        int64_t rem = spatial_idx;
+        for (int d = 0; d < spatial_ndim; d++) {
+            int64_t coord = rem / spatial_strides[d];
+            rem %= spatial_strides[d];
+            indices[d * total_elements + tid] = (int32_t)coord;
         }
     }
+}
+
+__global__ void cdt_finalize_distance_kernel(
+    const int32_t* __restrict__ dist,
+    float* __restrict__ output,
+    int64_t total_elements
+) {
+    int64_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= total_elements) return;
+    output[tid] = (dist[tid] == CDT_INF_VAL) ? -1.0f : (float)dist[tid];
 }
 
 // ============================================================================
@@ -268,6 +273,7 @@ std::tuple<torch::Tensor, torch::Tensor> cdt_cuda(
     bool return_indices
 ) {
     TORCH_CHECK(input.is_cuda(), "Input must be CUDA tensor");
+    const c10::cuda::CUDAGuard device_guard(input.device());
     TORCH_CHECK(input.scalar_type() == torch::kFloat32, "Input must be float32");
     TORCH_CHECK(metric == "chessboard" || metric == "taxicab",
                 "metric must be 'chessboard' or 'taxicab'");
@@ -275,6 +281,7 @@ std::tuple<torch::Tensor, torch::Tensor> cdt_cuda(
                 "At least one of return_distances or return_indices must be True");
 
     input = input.contiguous();
+    const auto stream = c10::cuda::getCurrentCUDAStream(input.get_device());
 
     bool is_taxicab = (metric == "taxicab");
     int total_ndim = input.dim();
@@ -319,7 +326,7 @@ std::tuple<torch::Tensor, torch::Tensor> cdt_cuda(
     int block = CDT_BLOCK_SIZE;
     int grid = (total_elements + block - 1) / block;
 
-    cdt_init_kernel<<<grid, block>>>(
+    cdt_init_kernel<<<grid, block, 0, stream>>>(
         input.data_ptr<float>(),
         dist.data_ptr<int32_t>(),
         return_indices ? indices.data_ptr<int32_t>() : nullptr,
@@ -329,6 +336,7 @@ std::tuple<torch::Tensor, torch::Tensor> cdt_cuda(
         spatial_strides_tensor.data_ptr<int64_t>(),
         return_indices
     );
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
 
     // For each dimension, do forward and backward sweeps
     for (int d = 0; d < spatial_ndim; d++) {
@@ -340,7 +348,7 @@ std::tuple<torch::Tensor, torch::Tensor> cdt_cuda(
         int sweep_grid = (num_lines + sweep_block - 1) / sweep_block;
 
         // Forward sweep
-        cdt_sweep_forward_chessboard_kernel<<<sweep_grid, sweep_block>>>(
+        cdt_sweep_forward_chessboard_kernel<<<sweep_grid, sweep_block, 0, stream>>>(
             dist.data_ptr<int32_t>(),
             return_indices ? indices.data_ptr<int32_t>() : nullptr,
             total_elements,
@@ -355,9 +363,10 @@ std::tuple<torch::Tensor, torch::Tensor> cdt_cuda(
             spatial_shape_tensor.data_ptr<int64_t>(),
             return_indices
         );
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
 
         // Backward sweep
-        cdt_sweep_backward_chessboard_kernel<<<sweep_grid, sweep_block>>>(
+        cdt_sweep_backward_chessboard_kernel<<<sweep_grid, sweep_block, 0, stream>>>(
             dist.data_ptr<int32_t>(),
             return_indices ? indices.data_ptr<int32_t>() : nullptr,
             total_elements,
@@ -372,6 +381,7 @@ std::tuple<torch::Tensor, torch::Tensor> cdt_cuda(
             spatial_shape_tensor.data_ptr<int64_t>(),
             return_indices
         );
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
     }
 
     // For chessboard metric, we need additional diagonal passes
@@ -408,7 +418,7 @@ std::tuple<torch::Tensor, torch::Tensor> cdt_cuda(
             // Need more passes for higher dimensions to ensure full propagation
             int num_passes = spatial_ndim * 2;  // Scale with dimensions
             for (int pass = 0; pass < num_passes; pass++) {
-                cdt_diagonal_pass_kernel<<<grid, block>>>(
+                cdt_diagonal_pass_kernel<<<grid, block, 0, stream>>>(
                     dist.data_ptr<int32_t>(),
                     return_indices ? indices.data_ptr<int32_t>() : nullptr,
                     total_elements,
@@ -422,6 +432,7 @@ std::tuple<torch::Tensor, torch::Tensor> cdt_cuda(
                     return_indices,
                     pass % 2 == 0
                 );
+                C10_CUDA_KERNEL_LAUNCH_CHECK();
             }
         }
     }
@@ -431,7 +442,13 @@ std::tuple<torch::Tensor, torch::Tensor> cdt_cuda(
     torch::Tensor result_indices;
 
     if (return_distances) {
-        result_dist = dist.to(torch::kFloat32).view(input.sizes());
+        result_dist = torch::empty_like(input);
+        cdt_finalize_distance_kernel<<<grid, block, 0, stream>>>(
+            dist.data_ptr<int32_t>(),
+            result_dist.data_ptr<float>(),
+            total_elements
+        );
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
     }
 
     if (return_indices) {
