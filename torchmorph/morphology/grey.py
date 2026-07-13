@@ -3,6 +3,33 @@ from torch import Tensor
 
 from .. import _C
 
+
+def _validate_grey_input(input: Tensor) -> int:
+    if not input.is_cuda:
+        raise ValueError("Input tensor must be on CUDA device.")
+    if input.ndim < 3:
+        raise ValueError(
+            f"Input must be (B, C, Spatial...) with at least 3 dimensions, got {input.shape}."
+        )
+    spatial_ndim = input.ndim - 2
+    if spatial_ndim > 8:
+        raise ValueError(f"Input spatial dimensions must be in range 1 to 8, got {spatial_ndim}.")
+    if input.numel() == 0:
+        raise ValueError(f"Invalid input: empty tensor with shape {input.shape}.")
+    return spatial_ndim
+
+
+def _validate_grey_output(input: Tensor, output: Tensor | None) -> None:
+    if output is None:
+        return
+    if output.shape != input.shape:
+        raise ValueError(f"output shape {output.shape} must match input shape {input.shape}")
+    if output.device != input.device:
+        raise ValueError(
+            f"output must be on the same device as input, got {output.device} and {input.device}"
+        )
+
+
 _MODE_MAP = {
     'constant': 0,
     'reflect': 1,
@@ -25,16 +52,8 @@ def _grey_morphology(
     operation: str,
 ) -> Tensor:
     """Shared argument normalization for grey erosion and dilation."""
-    if not input.is_cuda:
-        raise ValueError('Input tensor must be on CUDA device.')
-    if input.ndim < 3:
-        raise ValueError(
-            f'Input must be (B, C, Spatial...) with at least 3 dimensions, ' f'got {input.shape}.'
-        )
-    if input.numel() == 0:
-        raise ValueError(f'Invalid input: empty tensor with shape {input.shape}.')
-
-    spatial_ndim = input.ndim - 2
+    spatial_ndim = _validate_grey_input(input)
+    _validate_grey_output(input, output)
 
     footprint_cpu = torch.empty(0, dtype=torch.bool)
 
@@ -243,6 +262,9 @@ def morphological_gradient(
     origin: int | tuple[int, ...] = 0,
 ) -> Tensor:
     """N-dimensional morphological gradient for ``(B, C, Spatial...)`` CUDA tensors."""
+    _validate_grey_input(input)
+    _validate_grey_output(input, output)
+
     dilated = grey_dilation(
         input,
         size=size,
@@ -279,6 +301,9 @@ def white_tophat(
     origin: int | tuple[int, ...] = 0,
 ) -> Tensor:
     """N-dimensional white top-hat filter for ``(B, C, Spatial...)`` CUDA tensors."""
+    _validate_grey_input(input)
+    _validate_grey_output(input, output)
+
     opened = grey_opening(
         input,
         size=size,
@@ -306,6 +331,9 @@ def black_tophat(
     origin: int | tuple[int, ...] = 0,
 ) -> Tensor:
     """N-dimensional black top-hat filter for ``(B, C, Spatial...)`` CUDA tensors."""
+    _validate_grey_input(input)
+    _validate_grey_output(input, output)
+
     closed = grey_closing(
         input,
         size=size,
@@ -333,6 +361,9 @@ def morphological_laplace(
     origin: int | tuple[int, ...] = 0,
 ) -> Tensor:
     """N-dimensional morphological Laplace for ``(B, C, Spatial...)`` CUDA tensors."""
+    _validate_grey_input(input)
+    _validate_grey_output(input, output)
+
     dilated = grey_dilation(
         input,
         size=size,

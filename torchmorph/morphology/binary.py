@@ -4,8 +4,6 @@ from torch import Tensor
 from .. import _C
 from .structure import _normalize_origin, generate_binary_structure
 
-_BINARY_MORPH_MAX_NDIM = 8
-
 
 def _validate_binary_input(input: Tensor) -> int:
     if not input.is_cuda:
@@ -14,20 +12,15 @@ def _validate_binary_input(input: Tensor) -> int:
         raise ValueError(
             f"Input must be (B, C, Spatial...) with at least 3 dimensions, got {input.shape}."
         )
-
     spatial_ndim = input.ndim - 2
-    if spatial_ndim > _BINARY_MORPH_MAX_NDIM:
-        raise ValueError(
-            f"Input spatial dimensions must be in range 1 to {_BINARY_MORPH_MAX_NDIM}, "
-            f"got {spatial_ndim}."
-        )
+    if spatial_ndim > 8:
+        raise ValueError(f"Input spatial dimensions must be in range 1 to 8, got {spatial_ndim}.")
     if input.numel() == 0:
         raise ValueError(f"Invalid input: empty tensor with shape {input.shape}.")
-
     return spatial_ndim
 
 
-def _validate_output(input: Tensor, output: Tensor | None) -> None:
+def _validate_binary_output(input: Tensor, output: Tensor | None) -> None:
     if output is None:
         return
     if output.shape != input.shape:
@@ -78,7 +71,7 @@ def _binary_morphology(
 ) -> Tensor:
     iterate_until_stable = iterations < 1
     spatial_ndim = _validate_binary_input(input)
-    _validate_output(input, output)
+    _validate_binary_output(input, output)
 
     if structure is None:
         structure = generate_binary_structure(spatial_ndim, 1)
@@ -205,7 +198,7 @@ def binary_fill_holes(
 ) -> Tensor:
     """Fill holes in binary objects for `(B, C, Spatial...)` CUDA tensors."""
     _validate_binary_input(input)
-    _validate_output(input, output)
+    _validate_binary_output(input, output)
 
     mask = input == 0
     seed = torch.zeros_like(mask, dtype=torch.bool)
@@ -235,7 +228,7 @@ def binary_hit_or_miss(
 ) -> Tensor:
     """N-dimensional binary hit-or-miss transform for `(B, C, Spatial...)` CUDA tensors."""
     spatial_ndim = _validate_binary_input(input)
-    _validate_output(input, output)
+    _validate_binary_output(input, output)
     origin1 = _normalize_origin(origin1, spatial_ndim)
     origin2 = origin1 if origin2 is None else _normalize_origin(origin2, spatial_ndim)
 
