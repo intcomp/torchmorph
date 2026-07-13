@@ -1,3 +1,5 @@
+import argparse
+
 import scipy.ndimage as ndi
 import torch
 import torch.utils.benchmark as benchmark
@@ -5,17 +7,35 @@ from prettytable import PrettyTable
 
 import torchmorph as tm
 
-image_size = [64, 128, 256, 1024]
-batch_size = [1, 2, 4, 16]
+IMAGE_SIZES = [64, 128, 256, 1024]
+BATCH_SIZES = [1, 2, 4, 16]
 MIN_RUN_TIME = 1.0
 
+BINARY_OPERATORS = {
+    "erosion": (ndi.binary_erosion, tm.binary_erosion),
+    "dilation": (ndi.binary_dilation, tm.binary_dilation),
+    "fill_holes": (ndi.binary_fill_holes, tm.binary_fill_holes),
+    "hit_or_miss": (ndi.binary_hit_or_miss, tm.binary_hit_or_miss),
+    "opening": (ndi.binary_opening, tm.binary_opening),
+    "closing": (ndi.binary_closing, tm.binary_closing),
+    "propagation": (ndi.binary_propagation, tm.binary_propagation),
+}
 
-def bench_binary_erosion():
+
+def run_cuda(torch_op, x):
+    result = torch_op(x)
+    torch.cuda.synchronize()
+    return result
+
+
+def bench_binary_operator(operation, image_sizes, batch_sizes, min_run_time):
+    scipy_op, torch_op = BINARY_OPERATORS[operation]
+
     print("\n============================================")
-    print(" Benchmark: binary erosion ")
+    print(f" Benchmark: binary {operation} ")
     print("============================================")
 
-    for batch in batch_size:
+    for batch_size in batch_sizes:
         table = PrettyTable()
         table.field_names = [
             "Size",
@@ -28,290 +48,103 @@ def bench_binary_erosion():
         for column in table.field_names:
             table.align[column] = "r"
 
-        for size in image_size:
-            x = (torch.randn(batch, 1, size, size, device="cuda") > 0).to(torch.float32)
-            # scipy data
-            x_np_list = [x[i, 0].detach().cpu().numpy() for i in range(batch)]
-            # torch 1x data
-            x_one = [x[i : i + 1] for i in range(batch)]
+        for image_size in image_sizes:
+            x = (torch.randn(batch_size, 1, image_size, image_size, device="cuda") > 0).to(
+                torch.float32
+            )
+            x_np_list = [x[i, 0].detach().cpu().numpy() for i in range(batch_size)]
+            x_one = [x[i : i + 1] for i in range(batch_size)]
 
-            t_scipy = benchmark.Timer(
-                stmt="[scipy_erosion(data) for data in x_np_list]",
+            scipy_time = benchmark.Timer(
+                stmt="[scipy_op(data) for data in inputs]",
                 globals={
-                    "scipy_erosion": ndi.binary_erosion,
-                    "x_np_list": x_np_list,
+                    "scipy_op": scipy_op,
+                    "inputs": x_np_list,
                 },
-            ).blocked_autorange(min_run_time=MIN_RUN_TIME)
+            ).blocked_autorange(min_run_time=min_run_time)
 
-            # warmup
             for data in x_one:
-                tm.binary_erosion(data)
+                torch_op(data)
             torch.cuda.synchronize()
 
-            t_torch_1x = benchmark.Timer(
-                stmt="[tm_erosion(data) for data in x_one]",
+            torch_single_time = benchmark.Timer(
+                stmt="[run_cuda(torch_op, data) for data in inputs]",
                 globals={
-                    "tm_erosion": tm.binary_erosion,
-                    "x_one": x_one,
+                    "run_cuda": run_cuda,
+                    "torch_op": torch_op,
+                    "inputs": x_one,
                 },
-            ).blocked_autorange(min_run_time=MIN_RUN_TIME)
+            ).blocked_autorange(min_run_time=min_run_time)
 
-            t_torch_batch = benchmark.Timer(
-                stmt="tm_erosion(x)",
+            torch_batch_time = benchmark.Timer(
+                stmt="run_cuda(torch_op, x)",
                 globals={
-                    "tm_erosion": tm.binary_erosion,
+                    "run_cuda": run_cuda,
+                    "torch_op": torch_op,
                     "x": x,
                 },
-            ).blocked_autorange(min_run_time=MIN_RUN_TIME)
+            ).blocked_autorange(min_run_time=min_run_time)
 
-            scipy_ms = t_scipy.median * 1e3 / batch
-            torch_1x_ms = t_torch_1x.median * 1e3 / batch
-            torch_batch_ms = t_torch_batch.median * 1e3 / batch
-
-            speedup1x = scipy_ms / torch_1x_ms
-            speedupbatch = scipy_ms / torch_batch_ms
+            scipy_ms = scipy_time.median * 1e3 / batch_size
+            torch_single_ms = torch_single_time.median * 1e3 / batch_size
+            torch_batch_ms = torch_batch_time.median * 1e3 / batch_size
 
             table.add_row(
                 [
-                    size,
+                    image_size,
                     f"{scipy_ms:.3f}",
-                    f"{torch_1x_ms:.3f}",
+                    f"{torch_single_ms:.3f}",
                     f"{torch_batch_ms:.3f}",
-                    f"{speedup1x:.1f}x",
-                    f"{speedupbatch:.1f}x",
+                    f"{scipy_ms / torch_single_ms:.1f}x",
+                    f"{scipy_ms / torch_batch_ms:.1f}x",
                 ]
             )
-        print(f"\n=========== Batch size : {batch} ===========")
+
+        print(f"\n=========== Batch size : {batch_size} ===========")
         print(table)
 
 
-def bench_binary_dilation():
-    print("\n============================================")
-    print(" Benchmark: binary dilation ")
-    print("============================================")
+def main():
+    choices = (*BINARY_OPERATORS, "all")
+    parser = argparse.ArgumentParser(description="Benchmark binary morphology operators.")
+    parser.add_argument(
+        "operation",
+        choices=choices,
+        nargs="?",
+        default="all",
+        help="Operator to benchmark (default: all).",
+    )
+    parser.add_argument(
+        "--sizes",
+        type=int,
+        nargs="+",
+        default=IMAGE_SIZES,
+        help="Image sizes to benchmark (default: 64 128 256 1024).",
+    )
+    parser.add_argument(
+        "--batches",
+        type=int,
+        nargs="+",
+        default=BATCH_SIZES,
+        help="Batch sizes to benchmark (default: 1 2 4 16).",
+    )
+    parser.add_argument(
+        "--min-run-time",
+        type=float,
+        default=MIN_RUN_TIME,
+        help="Minimum benchmark time per timer in seconds (default: 1.0).",
+    )
+    args = parser.parse_args()
 
-    for batch in batch_size:
-        table = PrettyTable()
-        table.field_names = [
-            "Size",
-            "SciPy(ms)",
-            "Torch 1x(ms)",
-            "Torch batch(ms)",
-            "Speedup 1x",
-            "Speedup batch",
-        ]
-        for column in table.field_names:
-            table.align[column] = "r"
-
-        for size in image_size:
-            x = (torch.randn(batch, 1, size, size, device="cuda") > 0).to(torch.float32)
-            # scipy data
-            x_np_list = [x[i, 0].detach().cpu().numpy() for i in range(batch)]
-            # torch 1x data
-            x_one = [x[i : i + 1] for i in range(batch)]
-
-            t_scipy = benchmark.Timer(
-                stmt="[scipy_dilation(data) for data in x_np_list]",
-                globals={
-                    "scipy_dilation": ndi.binary_dilation,
-                    "x_np_list": x_np_list,
-                },
-            ).blocked_autorange(min_run_time=MIN_RUN_TIME)
-
-            # warmup
-            for data in x_one:
-                tm.binary_dilation(data)
-            torch.cuda.synchronize()
-
-            t_torch_1x = benchmark.Timer(
-                stmt="[tm_dilation(data) for data in x_one]",
-                globals={
-                    "tm_dilation": tm.binary_dilation,
-                    "x_one": x_one,
-                },
-            ).blocked_autorange(min_run_time=MIN_RUN_TIME)
-
-            t_torch_batch = benchmark.Timer(
-                stmt="tm_dilation(x)",
-                globals={
-                    "tm_dilation": tm.binary_dilation,
-                    "x": x,
-                },
-            ).blocked_autorange(min_run_time=MIN_RUN_TIME)
-
-            scipy_ms = t_scipy.median * 1e3 / batch
-            torch_1x_ms = t_torch_1x.median * 1e3 / batch
-            torch_batch_ms = t_torch_batch.median * 1e3 / batch
-
-            speedup1x = scipy_ms / torch_1x_ms
-            speedupbatch = scipy_ms / torch_batch_ms
-
-            table.add_row(
-                [
-                    size,
-                    f"{scipy_ms:.3f}",
-                    f"{torch_1x_ms:.3f}",
-                    f"{torch_batch_ms:.3f}",
-                    f"{speedup1x:.1f}x",
-                    f"{speedupbatch:.1f}x",
-                ]
-            )
-        print(f"\n=========== Batch size : {batch} ===========")
-        print(table)
-
-
-def bench_binary_opening():
-    print("\n============================================")
-    print(" Benchmark: binary opening ")
-    print("============================================")
-
-    for batch in batch_size:
-        table = PrettyTable()
-        table.field_names = [
-            "Size",
-            "SciPy(ms)",
-            "Torch 1x(ms)",
-            "Torch batch(ms)",
-            "Speedup 1x",
-            "Speedup batch",
-        ]
-        for column in table.field_names:
-            table.align[column] = "r"
-
-        for size in image_size:
-            x = (torch.randn(batch, 1, size, size, device="cuda") > 0).to(torch.float32)
-            # scipy data
-            x_np_list = [x[i, 0].detach().cpu().numpy() for i in range(batch)]
-            # torch 1x data
-            x_one = [x[i : i + 1] for i in range(batch)]
-
-            t_scipy = benchmark.Timer(
-                stmt="[scipy_opening(data) for data in x_np_list]",
-                globals={
-                    "scipy_opening": ndi.binary_opening,
-                    "x_np_list": x_np_list,
-                },
-            ).blocked_autorange(min_run_time=MIN_RUN_TIME)
-
-            # warmup
-            for data in x_one:
-                tm.binary_opening(data)
-
-            torch.cuda.synchronize()
-            t_torch_1x = benchmark.Timer(
-                stmt="[tm_opening(data) for data in x_one]",
-                globals={
-                    "tm_opening": tm.binary_opening,
-                    "x_one": x_one,
-                },
-            ).blocked_autorange(min_run_time=MIN_RUN_TIME)
-
-            t_torch_batch = benchmark.Timer(
-                stmt="tm_opening(x)",
-                globals={
-                    "tm_opening": tm.binary_opening,
-                    "x": x,
-                },
-            ).blocked_autorange(min_run_time=MIN_RUN_TIME)
-
-            scipy_ms = t_scipy.median * 1e3 / batch
-            torch_1x_ms = t_torch_1x.median * 1e3 / batch
-            torch_batch_ms = t_torch_batch.median * 1e3 / batch
-
-            speedup1x = scipy_ms / torch_1x_ms
-            speedupbatch = scipy_ms / torch_batch_ms
-
-            table.add_row(
-                [
-                    size,
-                    f"{scipy_ms:.3f}",
-                    f"{torch_1x_ms:.3f}",
-                    f"{torch_batch_ms:.3f}",
-                    f"{speedup1x:.1f}x",
-                    f"{speedupbatch:.1f}x",
-                ]
-            )
-        print(f"\n=========== Batch size : {batch} ===========")
-        print(table)
-
-
-def bench_binary_closing():
-    print("\n============================================")
-    print(" Benchmark: binary closing ")
-    print("============================================")
-
-    for batch in batch_size:
-        table = PrettyTable()
-        table.field_names = [
-            "Size",
-            "SciPy(ms)",
-            "Torch 1x(ms)",
-            "Torch batch(ms)",
-            "Speedup 1x",
-            "Speedup batch",
-        ]
-        for column in table.field_names:
-            table.align[column] = "r"
-
-        for size in image_size:
-            x = (torch.randn(batch, 1, size, size, device="cuda") > 0).to(torch.float32)
-            # scipy data
-            x_np_list = [x[i, 0].detach().cpu().numpy() for i in range(batch)]
-            # torch 1x data
-            x_one = [x[i : i + 1] for i in range(batch)]
-
-            t_scipy = benchmark.Timer(
-                stmt="[scipy_closing(data) for data in x_np_list]",
-                globals={
-                    "scipy_closing": ndi.binary_closing,
-                    "x_np_list": x_np_list,
-                },
-            ).blocked_autorange(min_run_time=MIN_RUN_TIME)
-
-            # warmup
-            for data in x_one:
-                tm.binary_closing(data)
-
-            torch.cuda.synchronize()
-            t_torch_1x = benchmark.Timer(
-                stmt="[tm_closing(data) for data in x_one]",
-                globals={
-                    "tm_closing": tm.binary_closing,
-                    "x_one": x_one,
-                },
-            ).blocked_autorange(min_run_time=MIN_RUN_TIME)
-
-            t_torch_batch = benchmark.Timer(
-                stmt="tm_closing(x)",
-                globals={
-                    "tm_closing": tm.binary_closing,
-                    "x": x,
-                },
-            ).blocked_autorange(min_run_time=MIN_RUN_TIME)
-
-            scipy_ms = t_scipy.median * 1e3 / batch
-            torch_1x_ms = t_torch_1x.median * 1e3 / batch
-            torch_batch_ms = t_torch_batch.median * 1e3 / batch
-
-            speedup1x = scipy_ms / torch_1x_ms
-            speedupbatch = scipy_ms / torch_batch_ms
-
-            table.add_row(
-                [
-                    size,
-                    f"{scipy_ms:.3f}",
-                    f"{torch_1x_ms:.3f}",
-                    f"{torch_batch_ms:.3f}",
-                    f"{speedup1x:.1f}x",
-                    f"{speedupbatch:.1f}x",
-                ]
-            )
-        print(f"\n=========== Batch size : {batch} ===========")
-        print(table)
+    operations = BINARY_OPERATORS if args.operation == "all" else (args.operation,)
+    for operation in operations:
+        bench_binary_operator(
+            operation,
+            image_sizes=args.sizes,
+            batch_sizes=args.batches,
+            min_run_time=args.min_run_time,
+        )
 
 
 if __name__ == "__main__":
-    bench_binary_erosion()
-    bench_binary_dilation()
-    bench_binary_opening()
-    bench_binary_closing()
+    main()

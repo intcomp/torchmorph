@@ -1,10 +1,15 @@
 #include <torch/extension.h>
+#include <c10/cuda/CUDAException.h>
+#include <c10/cuda/CUDAGuard.h>
+#include <c10/cuda/CUDAStream.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <vector>
 #include <string>
 #include <cmath>
 #include <tuple>
+#include <cstdint>
+#include <limits>
 
 #define BFDT_INF_VAL 1e20f
 #define BFDT_MAX_NDIM 8
@@ -130,14 +135,14 @@ __global__ void bfdt_kernel(
 
 #define DISPATCH_NDIM_AND_METRIC(METRIC_TYPE, NDIM_VAL, ...) \
     switch (NDIM_VAL) { \
-        case 1: bfdt_kernel<METRIC_TYPE, 1><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
-        case 2: bfdt_kernel<METRIC_TYPE, 2><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
-        case 3: bfdt_kernel<METRIC_TYPE, 3><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
-        case 4: bfdt_kernel<METRIC_TYPE, 4><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
-        case 5: bfdt_kernel<METRIC_TYPE, 5><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
-        case 6: bfdt_kernel<METRIC_TYPE, 6><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
-        case 7: bfdt_kernel<METRIC_TYPE, 7><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
-        case 8: bfdt_kernel<METRIC_TYPE, 8><<<blocks, threads, shared_mem_bytes>>>(__VA_ARGS__); break; \
+        case 1: bfdt_kernel<METRIC_TYPE, 1><<<blocks, threads, shared_mem_bytes, stream>>>(__VA_ARGS__); break; \
+        case 2: bfdt_kernel<METRIC_TYPE, 2><<<blocks, threads, shared_mem_bytes, stream>>>(__VA_ARGS__); break; \
+        case 3: bfdt_kernel<METRIC_TYPE, 3><<<blocks, threads, shared_mem_bytes, stream>>>(__VA_ARGS__); break; \
+        case 4: bfdt_kernel<METRIC_TYPE, 4><<<blocks, threads, shared_mem_bytes, stream>>>(__VA_ARGS__); break; \
+        case 5: bfdt_kernel<METRIC_TYPE, 5><<<blocks, threads, shared_mem_bytes, stream>>>(__VA_ARGS__); break; \
+        case 6: bfdt_kernel<METRIC_TYPE, 6><<<blocks, threads, shared_mem_bytes, stream>>>(__VA_ARGS__); break; \
+        case 7: bfdt_kernel<METRIC_TYPE, 7><<<blocks, threads, shared_mem_bytes, stream>>>(__VA_ARGS__); break; \
+        case 8: bfdt_kernel<METRIC_TYPE, 8><<<blocks, threads, shared_mem_bytes, stream>>>(__VA_ARGS__); break; \
         default: TORCH_CHECK(false, "Unsupported number of dimensions: ", NDIM_VAL); \
     }
 
@@ -154,8 +159,10 @@ std::tuple<torch::Tensor, torch::Tensor> bfdt_cuda(
     bool return_indices
 ) {
     TORCH_CHECK(input.is_cuda(), "Input must be a CUDA tensor");
+    const c10::cuda::CUDAGuard device_guard(input.device());
     
     input = input.contiguous();
+    const auto stream = c10::cuda::getCurrentCUDAStream(input.get_device());
     auto shape = input.sizes();
     int ndim = input.dim() - 2; // Extract spatial dimensions (excluding Batch and Channel)
     int64_t batch_size = shape[0] * shape[1];
@@ -192,9 +199,26 @@ std::tuple<torch::Tensor, torch::Tensor> bfdt_cuda(
         
         int num_fg = fg_indices_flat.size(0);
         int num_bg = bg_indices_flat.size(0);
-        
-        if (num_fg == 0) continue;
-        if (num_bg == 0) continue; // No background: distances remain initialized to INF
+
+        if (num_fg == 0 && !return_indices) {
+            dist_out.view({batch_size, spatial_size})[b].zero_();
+            continue;
+        }
+
+        if (num_bg == 0) {
+            if (return_distances) {
+                float value = metric_type == 0
+                    ? std::numeric_limits<float>::infinity()
+                    : static_cast<float>(std::numeric_limits<uint32_t>::max());
+                dist_out.view({batch_size, spatial_size})[b].fill_(value);
+            }
+            if (return_indices) {
+                for (int d = 0; d < ndim; d++) {
+                    indices_out.select(0, d).view({batch_size, spatial_size})[b].zero_();
+                }
+            }
+            continue;
+        }
 
         auto spatial_shape = input.sizes().slice(2);
         auto fg_coords = torch::empty({num_fg, ndim}, input.options().dtype(torch::kInt32));
@@ -223,29 +247,32 @@ std::tuple<torch::Tensor, torch::Tensor> bfdt_cuda(
         int blocks = (num_fg + threads - 1) / threads;
         size_t shared_mem_bytes = BFDT_BLOCK_SIZE * ndim * sizeof(float);
 
-        // Dispatch to different template instantiations based on metric type 
+        // Dispatch to different template instantiations based on metric type
         // to guarantee zero-overhead branching inside the inner loops.
-        if (metric_type == 0) {
-            DISPATCH_NDIM_AND_METRIC(0, ndim,
-                fg_coords.data_ptr<int>(), bg_coords.data_ptr<int>(),
-                batch_dist.data_ptr<float>(), batch_indices.data_ptr<int>(),
-                num_fg, num_bg, sampling_tensor.data_ptr<float>(),
-                return_distances, return_indices
-            );
-        } else if (metric_type == 1) {
-            DISPATCH_NDIM_AND_METRIC(1, ndim,
-                fg_coords.data_ptr<int>(), bg_coords.data_ptr<int>(),
-                batch_dist.data_ptr<float>(), batch_indices.data_ptr<int>(),
-                num_fg, num_bg, sampling_tensor.data_ptr<float>(),
-                return_distances, return_indices
-            );
-        } else if (metric_type == 2) {
-           DISPATCH_NDIM_AND_METRIC(2, ndim,
-                fg_coords.data_ptr<int>(), bg_coords.data_ptr<int>(),
-                batch_dist.data_ptr<float>(), batch_indices.data_ptr<int>(),
-                num_fg, num_bg, sampling_tensor.data_ptr<float>(),
-                return_distances, return_indices
-            );
+        if (num_fg > 0) {
+            if (metric_type == 0) {
+                DISPATCH_NDIM_AND_METRIC(0, ndim,
+                    fg_coords.data_ptr<int>(), bg_coords.data_ptr<int>(),
+                    batch_dist.data_ptr<float>(), batch_indices.data_ptr<int>(),
+                    num_fg, num_bg, sampling_tensor.data_ptr<float>(),
+                    return_distances, return_indices
+                );
+            } else if (metric_type == 1) {
+                DISPATCH_NDIM_AND_METRIC(1, ndim,
+                    fg_coords.data_ptr<int>(), bg_coords.data_ptr<int>(),
+                    batch_dist.data_ptr<float>(), batch_indices.data_ptr<int>(),
+                    num_fg, num_bg, sampling_tensor.data_ptr<float>(),
+                    return_distances, return_indices
+                );
+            } else if (metric_type == 2) {
+                DISPATCH_NDIM_AND_METRIC(2, ndim,
+                    fg_coords.data_ptr<int>(), bg_coords.data_ptr<int>(),
+                    batch_dist.data_ptr<float>(), batch_indices.data_ptr<int>(),
+                    num_fg, num_bg, sampling_tensor.data_ptr<float>(),
+                    return_distances, return_indices
+                );
+            }
+            C10_CUDA_KERNEL_LAUNCH_CHECK();
         }
 
         // Scatter the computed results back to their spatial positions

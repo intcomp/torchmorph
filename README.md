@@ -30,7 +30,7 @@ The instructions in this section are for **building TorchMorph from this reposit
 
 1. Create and activate a fresh conda environment:
    ```bash
-   conda create -n torchmorph python=3.11 -y
+   conda create -n torchmorph python=3.12 -y
    conda activate torchmorph
    ```
 
@@ -41,7 +41,8 @@ The instructions in this section are for **building TorchMorph from this reposit
 
 3. Ensure you have a compatible `nvcc` compiler.
    ```bash
-   conda install -c nvidia cuda-nvcc=12.4 -y
+   conda install -c nvidia -c conda-forge \
+     cuda-version=12.4 cuda-cudart=12.4 cuda-cudart-dev=12.4 cuda-nvcc=12.4 cuda-cccl=12.4
    ```
 
 4. Install TorchMorph's dependencies and build the extension:
