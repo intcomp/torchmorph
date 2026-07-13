@@ -19,6 +19,7 @@ from .morphology import (
     morphological_laplace,
     white_tophat,
 )
+from .optimal_transport import SinkhornSolver, build_cost_matrix
 
 __all__ = [
     "euclidean_distance_transform",
@@ -38,4 +39,6 @@ __all__ = [
     "morphological_laplace",
     "white_tophat",
     "black_tophat",
+    "SinkhornSolver",
+    "build_cost_matrix",
 ]
