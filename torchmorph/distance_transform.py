@@ -100,7 +100,6 @@ def euclidean_distance_transform(
     return_indices: bool = False,
     distances: Tensor | None = None,
     indices: Tensor | None = None,
-    algorithm: str = "auto",
 ) -> Tensor | tuple[Tensor, Tensor] | None:
     """Euclidean distance transform for (B, C, Spatial...) CUDA tensors."""
     spatial_ndim, return_distances, return_indices = _prepare_distance_transform(
@@ -110,12 +109,12 @@ def euclidean_distance_transform(
         distances,
         indices,
     )
+    normalized_sampling = _normalize_sampling(sampling, spatial_ndim)
     raw_distances, raw_indices = _C.edt_cuda(
         input.float().contiguous(),
-        _normalize_sampling(sampling, spatial_ndim),
+        normalized_sampling,
         return_distances,
         return_indices,
-        algorithm,
     )
     return _finish_distance_transform(
         raw_distances,

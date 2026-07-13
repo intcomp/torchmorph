@@ -76,8 +76,30 @@ def scipy_batch(input_array, scipy_op, **kwargs):
     return np.stack(results).reshape(input_array.shape)
 
 
+def scipy_batch_with_indices(input_array, scipy_op, **kwargs):
+    spatial_shape = input_array.shape[2:]
+    samples = input_array.reshape(-1, *spatial_shape)
+    results = [scipy_op(sample, return_indices=True, **kwargs) for sample in samples]
+    distances = np.stack([result[0] for result in results]).reshape(input_array.shape)
+    indices = np.stack([result[1] for result in results], axis=1).reshape(
+        len(spatial_shape), *input_array.shape
+    )
+    return distances, indices
+
+
 def cuda(array):
     return torch.as_tensor(np.ascontiguousarray(array), device="cuda")
+
+
+def own_indices(input):
+    spatial_ndim = input.ndim - 2
+    coordinates = torch.stack(
+        torch.meshgrid(
+            *[torch.arange(size, device=input.device) for size in input.shape[2:]],
+            indexing="ij",
+        )
+    ).to(torch.int32)
+    return coordinates.view(spatial_ndim, 1, 1, *input.shape[2:]).expand(spatial_ndim, *input.shape)
 
 
 def assert_indices_describe_distances(input, distances, indices, metric, sampling=None):
@@ -259,21 +281,131 @@ def test_sampling_validation(distance_op, _, kwargs, sampling):
         distance_op(cuda(CASES[2]), sampling=sampling, **kwargs)
 
 
-@pytest.mark.parametrize("algorithm", ["exact", "jfa", "auto"])
-@pytest.mark.parametrize("spatial_ndim", [2, 3])
-def test_edt_algorithms_match_scipy(algorithm, spatial_ndim):
-    input_array = CASES[spatial_ndim]
-    result = tm.euclidean_distance_transform(cuda(input_array), algorithm=algorithm)
-    expected = scipy_batch(input_array, ndi.distance_transform_edt)
-    torch.testing.assert_close(result.cpu(), torch.as_tensor(expected).float())
+def test_edt_rejects_removed_algorithm_argument():
+    with pytest.raises(TypeError, match="algorithm"):
+        tm.euclidean_distance_transform(cuda(CASES[2]), algorithm="exact")
 
 
-def test_edt_jfa_falls_back_for_nonunit_sampling():
-    input = cuda(CASES[2])
-    kwargs = {"sampling": [0.5, 2.0]}
-    exact = tm.euclidean_distance_transform(input, algorithm="exact", **kwargs)
-    jfa = tm.euclidean_distance_transform(input, algorithm="jfa", **kwargs)
-    torch.testing.assert_close(jfa, exact)
+@pytest.mark.parametrize(("torch_op", "scipy_op", "torch_kwargs", "scipy_kwargs"), SCIPY_CASES)
+@pytest.mark.parametrize("value", [0.0, 1.0], ids=["all-background", "all-foreground"])
+def test_uniform_inputs_match_scipy(torch_op, scipy_op, torch_kwargs, scipy_kwargs, value):
+    input_array = np.full((2, 2, 3, 4), value, dtype=np.float32)
+    distances, indices = torch_op(cuda(input_array), return_indices=True, **torch_kwargs)
+    expected_distances, expected_indices = scipy_batch_with_indices(
+        input_array, scipy_op, **scipy_kwargs
+    )
+
+    torch.testing.assert_close(distances.cpu(), torch.as_tensor(expected_distances).float())
+    torch.testing.assert_close(indices.cpu(), torch.as_tensor(expected_indices).int())
+
+
+@pytest.mark.parametrize(("torch_op", "scipy_op", "torch_kwargs", "scipy_kwargs"), SCIPY_CASES)
+@pytest.mark.parametrize("spatial_ndim", [4, 5, 6, 7, 8])
+def test_high_dimensional_inputs_match_scipy(
+    torch_op, scipy_op, torch_kwargs, scipy_kwargs, spatial_ndim
+):
+    rng = np.random.default_rng(42)
+    input_array = rng.integers(0, 2, size=(2, 2, *([2] * spatial_ndim))).astype(np.float32)
+    distances, indices = torch_op(cuda(input_array), return_indices=True, **torch_kwargs)
+    expected_distances, expected_indices = scipy_batch_with_indices(
+        input_array, scipy_op, **scipy_kwargs
+    )
+    torch.testing.assert_close(distances.cpu(), torch.as_tensor(expected_distances).float())
+    assert indices.dtype == torch.int32
+    assert_indices_describe_distances(
+        cuda(input_array),
+        distances,
+        indices,
+        torch_kwargs.get("metric", "euclidean"),
+    )
+
+
+@pytest.mark.parametrize(("torch_op", "scipy_op", "torch_kwargs", "scipy_kwargs"), SCIPY_CASES)
+def test_noncontiguous_batches_and_channels_match_scipy(
+    torch_op, scipy_op, torch_kwargs, scipy_kwargs
+):
+    input_array = np.ones((2, 2, 5, 6), dtype=np.float32)
+    input_array[0, 0] = 0
+    input_array[0, 1, ::2, ::2] = 0
+    input_array[1, 0, 1::2, ::2] = 0
+    input_array[1, 1, 2, 3] = 0
+    input = cuda(input_array).transpose(-1, -2)
+    assert not input.is_contiguous()
+
+    transposed_array = input.cpu().numpy()
+    distances, indices = torch_op(input, return_indices=True, **torch_kwargs)
+    expected_distances, expected_indices = scipy_batch_with_indices(
+        transposed_array, scipy_op, **scipy_kwargs
+    )
+    torch.testing.assert_close(distances.cpu(), torch.as_tensor(expected_distances).float())
+    assert indices.dtype == torch.int32
+    assert_indices_describe_distances(
+        input,
+        distances,
+        indices,
+        torch_kwargs.get("metric", "euclidean"),
+    )
+
+
+@pytest.mark.parametrize("distance_op", DISTANCE_OPERATORS)
+def test_distance_transform_is_not_differentiable(distance_op):
+    input = cuda(CASES[2]).requires_grad_()
+    result = distance_op(input)
+    assert not result.requires_grad
+
+
+@pytest.mark.parametrize("distance_op", DISTANCE_OPERATORS)
+@pytest.mark.parametrize("spatial_shape", [(16, 16), (2, 2, 2, 2)], ids=["2d", "4d"])
+@pytest.mark.parametrize("output_mode", ["distances", "indices", "preallocated"])
+def test_distance_transform_uses_current_cuda_stream(distance_op, spatial_shape, output_mode):
+    input = torch.ones((1, 1, *spatial_shape), device="cuda")
+    stream = torch.cuda.Stream()
+    distances = None
+    indices = None
+
+    with torch.cuda.stream(stream):
+        torch.cuda._sleep(5_000_000)
+        input.zero_()
+        if output_mode == "distances":
+            distances = distance_op(input)
+        elif output_mode == "indices":
+            indices = distance_op(input, return_distances=False, return_indices=True)
+        else:
+            distances = torch.full_like(input, float("nan"))
+            indices = torch.full(
+                (len(spatial_shape), *input.shape),
+                -2,
+                dtype=torch.int32,
+                device=input.device,
+            )
+            result = distance_op(
+                input,
+                return_distances=False,
+                return_indices=False,
+                distances=distances,
+                indices=indices,
+            )
+            assert result is None
+
+    stream.synchronize()
+    if distances is not None:
+        torch.testing.assert_close(distances, torch.zeros_like(distances))
+    if indices is not None:
+        torch.testing.assert_close(indices, own_indices(input))
+
+
+@pytest.mark.parametrize("spatial_ndim", [1, 2, 4])
+def test_edt_all_foreground_sampling_matches_scipy(spatial_ndim):
+    input_array = np.ones((2, 2, *([3] * spatial_ndim)), dtype=np.float32)
+    sampling = [0.5 + dim for dim in range(spatial_ndim)]
+    distances, indices = tm.euclidean_distance_transform(
+        cuda(input_array), sampling=sampling, return_indices=True
+    )
+    expected_distances, expected_indices = scipy_batch_with_indices(
+        input_array, ndi.distance_transform_edt, sampling=sampling
+    )
+    torch.testing.assert_close(distances.cpu(), torch.as_tensor(expected_distances).float())
+    torch.testing.assert_close(indices.cpu(), torch.as_tensor(expected_indices).int())
 
 
 @pytest.mark.parametrize(
@@ -300,7 +432,25 @@ def test_invalid_metric(distance_op, kwargs):
 
 @pytest.mark.skipif(torch.cuda.device_count() < 2, reason="requires two CUDA devices")
 @pytest.mark.parametrize("distance_op", DISTANCE_OPERATORS)
-def test_distance_transform_uses_input_device(distance_op):
+@pytest.mark.parametrize("output_mode", ["distances", "indices", "preallocated"])
+def test_distance_transform_uses_input_device(distance_op, output_mode):
     input = torch.as_tensor(CASES[2], device="cuda:1")
-    result = distance_op(input)
-    assert result.device == input.device
+    with torch.cuda.device(0):
+        if output_mode == "distances":
+            outputs = (distance_op(input),)
+        elif output_mode == "indices":
+            outputs = (distance_op(input, return_distances=False, return_indices=True),)
+        else:
+            distances = torch.empty_like(input)
+            indices = torch.empty((2, *input.shape), dtype=torch.int32, device=input.device)
+            result = distance_op(
+                input,
+                return_distances=False,
+                return_indices=False,
+                distances=distances,
+                indices=indices,
+            )
+            assert result is None
+            outputs = (distances, indices)
+
+    assert all(output.device == input.device for output in outputs)

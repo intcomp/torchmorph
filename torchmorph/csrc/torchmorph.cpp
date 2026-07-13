@@ -36,8 +36,7 @@ std::tuple<torch::Tensor, torch::Tensor> edt_cuda(
     torch::Tensor input,
     std::vector<float> sampling,
     bool return_distances,
-    bool return_indices,
-    const std::string& algorithm
+    bool return_indices
 );
 
 std::tuple<torch::Tensor, torch::Tensor> cdt_cuda(
@@ -94,8 +93,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           py::arg("input"),
           py::arg("sampling"),
           py::arg("return_distances") = true,
-          py::arg("return_indices") = false,
-          py::arg("algorithm") = "exact");
+          py::arg("return_indices") = false);
 
     m.def("cdt_cuda", &cdt_cuda,
           "Chessboard/Manhattan distance transform",

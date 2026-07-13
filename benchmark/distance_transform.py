@@ -127,10 +127,7 @@ def benchmark_transform(
 
 
 def bench_edt(args):
-    operations = {
-        "exact": partial(tm.euclidean_distance_transform, algorithm="exact"),
-        "jfa": partial(tm.euclidean_distance_transform, algorithm="jfa"),
-    }
+    operations = {"torchmorph": tm.euclidean_distance_transform}
     benchmark_transform(
         "EDT 2D",
         ndi.distance_transform_edt,
