@@ -49,6 +49,14 @@ def _normalize_origin(origin: int | tuple[int, ...], ndim: int) -> tuple[int, ..
     return origin_tuple
 
 
+def _validate_origin(origin: tuple[int, ...], structure: Tensor, name: str = "origin") -> None:
+    for origin_value, structure_size in zip(origin, structure.shape):
+        min_origin = -(structure_size // 2)
+        max_origin = (structure_size - 1) // 2
+        if not min_origin <= origin_value <= max_origin:
+            raise ValueError(f"invalid {name}")
+
+
 def iterate_structure(
     structure: Tensor,
     iterations: int,

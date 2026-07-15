@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from torch import Tensor
 
 from . import _C
+from ._validation import validate_bcs_input, validate_output
 
 
 def _normalize_sampling(
@@ -33,34 +34,9 @@ def _prepare_distance_transform(
     distances: Tensor | None,
     indices: Tensor | None,
 ) -> tuple[int, bool, bool]:
-    if not input.is_cuda:
-        raise ValueError("Input tensor must be on CUDA device.")
-    if input.ndim < 3:
-        raise ValueError(
-            f"Input must be (B, C, Spatial...) with at least 3 dimensions, got {input.shape}."
-        )
-    spatial_ndim = input.ndim - 2
-    if spatial_ndim > 8:
-        raise ValueError(f"Input spatial dimensions must be in range 1 to 8, got {spatial_ndim}.")
-    if input.numel() == 0:
-        raise ValueError(f"Invalid input: empty tensor with shape {input.shape}.")
-
-    expected_indices_shape = (spatial_ndim, *input.shape)
-    for name, output, expected_shape in (
-        ("distances", distances, input.shape),
-        ("indices", indices, expected_indices_shape),
-    ):
-        if output is None:
-            continue
-        if tuple(output.shape) != tuple(expected_shape):
-            raise ValueError(
-                f"{name} shape {output.shape} must match expected shape {expected_shape}"
-            )
-        if output.device != input.device:
-            raise ValueError(
-                f"{name} must be on the same device as input, "
-                f"got {output.device} and {input.device}"
-            )
+    spatial_ndim = validate_bcs_input(input)
+    validate_output(input, distances, name="distances")
+    validate_output(input, indices, (spatial_ndim, *input.shape), name="indices")
 
     return_distances = return_distances or distances is not None
     return_indices = return_indices or indices is not None

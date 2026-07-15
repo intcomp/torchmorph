@@ -2,47 +2,14 @@ import torch
 from torch import Tensor
 
 from .. import _C
-from .structure import _normalize_origin, generate_binary_structure
-
-
-def _validate_binary_input(input: Tensor) -> int:
-    if not input.is_cuda:
-        raise ValueError("Input tensor must be on CUDA device.")
-    if input.ndim < 3:
-        raise ValueError(
-            f"Input must be (B, C, Spatial...) with at least 3 dimensions, got {input.shape}."
-        )
-    spatial_ndim = input.ndim - 2
-    if spatial_ndim > 8:
-        raise ValueError(f"Input spatial dimensions must be in range 1 to 8, got {spatial_ndim}.")
-    if input.numel() == 0:
-        raise ValueError(f"Invalid input: empty tensor with shape {input.shape}.")
-    return spatial_ndim
-
-
-def _validate_binary_output(input: Tensor, output: Tensor | None) -> None:
-    if output is None:
-        return
-    if output.shape != input.shape:
-        raise ValueError(f"output shape {output.shape} must match input shape {input.shape}")
-    if output.device != input.device:
-        raise ValueError(
-            f"output must be on the same device as input, got {output.device} and {input.device}"
-        )
+from .._validation import validate_bcs_input, validate_output
+from .structure import _normalize_origin, _validate_origin, generate_binary_structure
 
 
 def _normalize_structure(structure: Tensor, spatial_ndim: int, name: str = "structure") -> Tensor:
     if structure.ndim != spatial_ndim:
         raise ValueError(f"{name} dimension is not {spatial_ndim}, got {structure.ndim}")
     return (structure != 0).detach().to(device="cpu", dtype=torch.bool).contiguous()
-
-
-def _validate_origin(origin: tuple[int, ...], structure: Tensor, name: str = "origin") -> None:
-    for origin_value, structure_size in zip(origin, structure.shape):
-        min_origin = -(structure_size // 2)
-        max_origin = (structure_size - 1) // 2
-        if not min_origin <= origin_value <= max_origin:
-            raise ValueError(f"invalid {name}")
 
 
 def _binary_morphology_cuda_step(
@@ -53,7 +20,7 @@ def _binary_morphology_cuda_step(
     *,
     mode: str,
 ) -> Tensor:
-    x = (input != 0).contiguous()
+    x = input if input.dtype == torch.bool and input.is_contiguous() else (input != 0).contiguous()
     kernel = _C.binary_erosion_cuda if mode == "erosion" else _C.binary_dilation_cuda
     return kernel(x, structure, list(origin), bool(border_value))
 
@@ -70,8 +37,8 @@ def _binary_morphology(
     mode: str,
 ) -> Tensor:
     iterate_until_stable = iterations < 1
-    spatial_ndim = _validate_binary_input(input)
-    _validate_binary_output(input, output)
+    spatial_ndim = validate_bcs_input(input)
+    validate_output(input, output)
 
     if structure is None:
         structure = generate_binary_structure(spatial_ndim, 1)
@@ -107,7 +74,7 @@ def _binary_morphology(
             if old is not None and torch.equal(x, old):
                 break
 
-            old = x.clone()
+            old = x
     else:
         for _ in range(iterations):
             x = step(x)
@@ -197,8 +164,8 @@ def binary_fill_holes(
     origin: int | tuple[int, ...] = 0,
 ) -> Tensor:
     """Fill holes in binary objects for `(B, C, Spatial...)` CUDA tensors."""
-    _validate_binary_input(input)
-    _validate_binary_output(input, output)
+    validate_bcs_input(input)
+    validate_output(input, output)
 
     mask = input == 0
     seed = torch.zeros_like(mask, dtype=torch.bool)
@@ -227,8 +194,8 @@ def binary_hit_or_miss(
     origin2: int | tuple[int, ...] | None = None,
 ) -> Tensor:
     """N-dimensional binary hit-or-miss transform for `(B, C, Spatial...)` CUDA tensors."""
-    spatial_ndim = _validate_binary_input(input)
-    _validate_binary_output(input, output)
+    spatial_ndim = validate_bcs_input(input)
+    validate_output(input, output)
     origin1 = _normalize_origin(origin1, spatial_ndim)
     origin2 = origin1 if origin2 is None else _normalize_origin(origin2, spatial_ndim)
 
