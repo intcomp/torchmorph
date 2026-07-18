@@ -1,5 +1,4 @@
-import glob
-import os
+from pathlib import Path
 
 from setuptools import find_packages, setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
@@ -7,8 +6,8 @@ from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 def get_extensions():
     # Find all CUDA and C++ source files automatically
-    src_dir = os.path.join("torchmorph", "csrc")
-    sources = glob.glob(os.path.join(src_dir, "*.cu")) + glob.glob(os.path.join(src_dir, "*.cpp"))
+    src_dir = Path("torchmorph") / "csrc"
+    sources = [str(path) for path in [*src_dir.glob("*.cu"), *src_dir.glob("*.cpp")]]
 
     extension = CUDAExtension(
         name="torchmorph._C",
@@ -29,7 +28,7 @@ setup(
     description="CUDA-accelerated morphological transformations for PyTorch",
     url="https://github.com/kaizhao-shu/torchmorph",
     packages=find_packages(),
-    python_requires=">=3.8",
+    python_requires=">=3.12",
     install_requires=["torch"],
     ext_modules=get_extensions(),
     cmdclass={"build_ext": BuildExtension},
