@@ -155,6 +155,23 @@ def test_grey_morphology_output(torch_op, scipy_op):
 
 
 @pytest.mark.parametrize("torch_op", TORCH_OPERATORS)
+def test_grey_morphology_requires_output_shape_and_device(torch_op):
+    x = torch.as_tensor(CASE_2D, device="cuda")
+
+    with pytest.raises(ValueError, match="output shape"):
+        torch_op(x, size=3, output=torch.empty((1, 1, 2, 2), device="cuda"))
+    with pytest.raises(ValueError, match="same device"):
+        torch_op(x, size=3, output=torch.empty_like(x, device="cpu"))
+
+
+@pytest.mark.parametrize("torch_op", TORCH_OPERATORS)
+def test_grey_morphology_rejects_more_than_eight_spatial_dimensions(torch_op):
+    x = torch.ones((1, 1, *([2] * 9)), device="cuda")
+    with pytest.raises(ValueError, match="spatial dimensions"):
+        torch_op(x, size=3)
+
+
+@pytest.mark.parametrize("torch_op", TORCH_OPERATORS)
 def test_grey_morphology_requires_structuring_element(torch_op):
     x = torch.as_tensor(CASE_2D, device="cuda")
     with pytest.raises(ValueError, match="At least one"):
@@ -188,6 +205,21 @@ def test_grey_morphology_rejects_invalid_origin(torch_op, origin):
     x = torch.as_tensor(CASE_2D, device="cuda")
     with pytest.raises(ValueError, match="invalid origin"):
         torch_op(x, size=3, origin=origin)
+
+
+@pytest.mark.parametrize("torch_op", TORCH_OPERATORS)
+@pytest.mark.parametrize("size", [0, -1, (3, 0), (3, -1)])
+def test_grey_morphology_rejects_nonpositive_size(torch_op, size):
+    x = torch.as_tensor(CASE_2D, device="cuda")
+    with pytest.raises(ValueError, match="greater than zero"):
+        torch_op(x, size=size)
+
+
+@pytest.mark.parametrize("torch_op", TORCH_OPERATORS)
+def test_grey_morphology_is_not_differentiable(torch_op):
+    x = torch.as_tensor(CASE_2D, device="cuda").requires_grad_()
+    result = torch_op(x, size=3)
+    assert not result.requires_grad
 
 
 @pytest.mark.parametrize(("torch_op", "scipy_op"), GREY_OPERATORS)

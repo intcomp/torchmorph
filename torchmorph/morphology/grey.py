@@ -2,6 +2,8 @@ import torch
 from torch import Tensor
 
 from .. import _C
+from .._validation import validate_bcs_input, validate_output
+from .structure import _normalize_origin, _validate_origin
 
 _MODE_MAP = {
     'constant': 0,
@@ -10,6 +12,18 @@ _MODE_MAP = {
     'mirror': 3,
     'wrap': 4,
 }
+
+
+def _element_kwargs(size, footprint, structure, mode, cval, origin) -> dict:
+    """Pack the structuring-element arguments shared by every grey operator."""
+    return dict(
+        size=size,
+        footprint=footprint,
+        structure=structure,
+        mode=mode,
+        cval=cval,
+        origin=origin,
+    )
 
 
 def _grey_morphology(
@@ -25,16 +39,8 @@ def _grey_morphology(
     operation: str,
 ) -> Tensor:
     """Shared argument normalization for grey erosion and dilation."""
-    if not input.is_cuda:
-        raise ValueError('Input tensor must be on CUDA device.')
-    if input.ndim < 3:
-        raise ValueError(
-            f'Input must be (B, C, Spatial...) with at least 3 dimensions, ' f'got {input.shape}.'
-        )
-    if input.numel() == 0:
-        raise ValueError(f'Invalid input: empty tensor with shape {input.shape}.')
-
-    spatial_ndim = input.ndim - 2
+    spatial_ndim = validate_bcs_input(input)
+    validate_output(input, output)
 
     footprint_cpu = torch.empty(0, dtype=torch.bool)
 
@@ -60,6 +66,8 @@ def _grey_morphology(
     elif size is not None:
         if isinstance(size, int):
             size = (size,) * spatial_ndim
+        if any(value <= 0 for value in size):
+            raise ValueError("size values must be greater than zero")
         struct = torch.zeros(size, dtype=torch.float32)
     else:
         raise ValueError('At least one of size, footprint, or structure must be specified.')
@@ -70,21 +78,10 @@ def _grey_morphology(
         )
     struct = struct.detach().to(device='cpu', dtype=torch.float32).contiguous()
 
-    # Normalize origin
-    if isinstance(origin, int):
-        origin_list = [origin] * spatial_ndim
-    else:
-        origin_list = list(origin)
-    if len(origin_list) != spatial_ndim:
-        raise ValueError(
-            f'Origin length {len(origin_list)} must match spatial dimension ' f'{spatial_ndim}.'
-        )
-
-    for origin_value, structure_size in zip(origin_list, struct.shape):
-        min_origin = -(structure_size // 2)
-        max_origin = (structure_size - 1) // 2
-        if not min_origin <= origin_value <= max_origin:
-            raise ValueError("invalid origin")
+    # Normalize and validate origin
+    origin_tuple = _normalize_origin(origin, spatial_ndim)
+    _validate_origin(origin_tuple, struct)
+    origin_list = list(origin_tuple)
 
     # Map mode string to int
     if mode not in _MODE_MAP:
@@ -176,25 +173,9 @@ def grey_opening(
 
     Computation uses float32. The result is float32 unless ``output`` is given.
     """
-    eroded = grey_erosion(
-        input,
-        size=size,
-        footprint=footprint,
-        structure=structure,
-        mode=mode,
-        cval=cval,
-        origin=origin,
-    )
-    return grey_dilation(
-        eroded,
-        size=size,
-        footprint=footprint,
-        structure=structure,
-        output=output,
-        mode=mode,
-        cval=cval,
-        origin=origin,
-    )
+    kwargs = _element_kwargs(size, footprint, structure, mode, cval, origin)
+    eroded = grey_erosion(input, **kwargs)
+    return grey_dilation(eroded, output=output, **kwargs)
 
 
 def grey_closing(
@@ -211,25 +192,9 @@ def grey_closing(
 
     Computation uses float32. The result is float32 unless ``output`` is given.
     """
-    dilated = grey_dilation(
-        input,
-        size=size,
-        footprint=footprint,
-        structure=structure,
-        mode=mode,
-        cval=cval,
-        origin=origin,
-    )
-    return grey_erosion(
-        dilated,
-        size=size,
-        footprint=footprint,
-        structure=structure,
-        output=output,
-        mode=mode,
-        cval=cval,
-        origin=origin,
-    )
+    kwargs = _element_kwargs(size, footprint, structure, mode, cval, origin)
+    dilated = grey_dilation(input, **kwargs)
+    return grey_erosion(dilated, output=output, **kwargs)
 
 
 def morphological_gradient(
@@ -243,24 +208,12 @@ def morphological_gradient(
     origin: int | tuple[int, ...] = 0,
 ) -> Tensor:
     """N-dimensional morphological gradient for ``(B, C, Spatial...)`` CUDA tensors."""
-    dilated = grey_dilation(
-        input,
-        size=size,
-        footprint=footprint,
-        structure=structure,
-        mode=mode,
-        cval=cval,
-        origin=origin,
-    )
-    eroded = grey_erosion(
-        input,
-        size=size,
-        footprint=footprint,
-        structure=structure,
-        mode=mode,
-        cval=cval,
-        origin=origin,
-    )
+    validate_bcs_input(input)
+    validate_output(input, output)
+
+    kwargs = _element_kwargs(size, footprint, structure, mode, cval, origin)
+    dilated = grey_dilation(input, **kwargs)
+    eroded = grey_erosion(input, **kwargs)
     result = dilated - eroded
     if output is not None:
         output.copy_(result)
@@ -279,16 +232,11 @@ def white_tophat(
     origin: int | tuple[int, ...] = 0,
 ) -> Tensor:
     """N-dimensional white top-hat filter for ``(B, C, Spatial...)`` CUDA tensors."""
-    opened = grey_opening(
-        input,
-        size=size,
-        footprint=footprint,
-        structure=structure,
-        mode=mode,
-        cval=cval,
-        origin=origin,
-    )
-    result = input.float() - opened
+    validate_bcs_input(input)
+    validate_output(input, output)
+
+    opened = grey_opening(input, **_element_kwargs(size, footprint, structure, mode, cval, origin))
+    result = input.detach().float() - opened
     if output is not None:
         output.copy_(result)
         return output
@@ -306,16 +254,11 @@ def black_tophat(
     origin: int | tuple[int, ...] = 0,
 ) -> Tensor:
     """N-dimensional black top-hat filter for ``(B, C, Spatial...)`` CUDA tensors."""
-    closed = grey_closing(
-        input,
-        size=size,
-        footprint=footprint,
-        structure=structure,
-        mode=mode,
-        cval=cval,
-        origin=origin,
-    )
-    result = closed - input.float()
+    validate_bcs_input(input)
+    validate_output(input, output)
+
+    closed = grey_closing(input, **_element_kwargs(size, footprint, structure, mode, cval, origin))
+    result = closed - input.detach().float()
     if output is not None:
         output.copy_(result)
         return output
@@ -333,25 +276,13 @@ def morphological_laplace(
     origin: int | tuple[int, ...] = 0,
 ) -> Tensor:
     """N-dimensional morphological Laplace for ``(B, C, Spatial...)`` CUDA tensors."""
-    dilated = grey_dilation(
-        input,
-        size=size,
-        footprint=footprint,
-        structure=structure,
-        mode=mode,
-        cval=cval,
-        origin=origin,
-    )
-    eroded = grey_erosion(
-        input,
-        size=size,
-        footprint=footprint,
-        structure=structure,
-        mode=mode,
-        cval=cval,
-        origin=origin,
-    )
-    result = dilated + eroded - 2 * input.float()
+    validate_bcs_input(input)
+    validate_output(input, output)
+
+    kwargs = _element_kwargs(size, footprint, structure, mode, cval, origin)
+    dilated = grey_dilation(input, **kwargs)
+    eroded = grey_erosion(input, **kwargs)
+    result = dilated + eroded - 2 * input.detach().float()
     if output is not None:
         output.copy_(result)
         return output

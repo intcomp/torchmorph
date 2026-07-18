@@ -39,14 +39,22 @@ def _iterate_generated_structure(rank: int, connectivity: int, iterations: int, 
     return offsets.abs().sum(dim=0) <= connectivity * iterations
 
 
-def _prepare_origin(origin: int | tuple[int, ...], ndim: int) -> list[int]:
+def _normalize_origin(origin: int | tuple[int, ...], ndim: int) -> tuple[int, ...]:
     if isinstance(origin, int):
-        return [origin] * ndim
+        return (origin,) * ndim
 
-    origin_list = list(origin)
-    if len(origin_list) != ndim:
-        raise ValueError(f"origin dimension is not {ndim}, got {len(origin_list)}")
-    return origin_list
+    origin_tuple = tuple(origin)
+    if len(origin_tuple) != ndim:
+        raise ValueError(f"origin dimension is not {ndim}, got {len(origin_tuple)}")
+    return origin_tuple
+
+
+def _validate_origin(origin: tuple[int, ...], structure: Tensor, name: str = "origin") -> None:
+    for origin_value, structure_size in zip(origin, structure.shape):
+        min_origin = -(structure_size // 2)
+        max_origin = (structure_size - 1) // 2
+        if not min_origin <= origin_value <= max_origin:
+            raise ValueError(f"invalid {name}")
 
 
 def iterate_structure(
@@ -85,5 +93,5 @@ def iterate_structure(
     if origin is None:
         return result
 
-    origin_list = _prepare_origin(origin, structure.ndim)
-    return result, [value * iterations for value in origin_list]
+    origin_tuple = _normalize_origin(origin, structure.ndim)
+    return result, [value * iterations for value in origin_tuple]
