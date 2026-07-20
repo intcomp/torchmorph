@@ -7,11 +7,22 @@ repo_name: intcomp/torchmorph
 theme:
   name: material
   palette:
-    scheme: default
-    primary: indigo
+    - scheme: default
+      primary: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
   features:
     - navigation.sections
     - content.code.copy
+
+extra_css:
+  - stylesheets/extra.css
 
 plugins:
   - search
@@ -24,6 +35,8 @@ plugins:
             show_root_heading: true
             show_symbol_type_heading: true
             merge_init_into_class: true
+            separate_signature: true
+            line_length: 88
 
 markdown_extensions:
   - pymdownx.highlight:
@@ -38,3 +51,4 @@ nav:
   - API Reference:
       - Distance Transforms: api/distance_transforms.md
       - Morphological Operations: api/morphological_ops.md
+      - Optimal Transport: api/optimal_transport.md

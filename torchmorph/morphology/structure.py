@@ -20,7 +20,7 @@ def generate_binary_structure(rank: int, connectivity: int) -> Tensor:
     Returns:
         torch.Tensor: Boolean tensor with shape ``(3,) * rank``.
 
-    Examples:
+    Example:
         ```pycon
         >>> import torch
         >>> import torchmorph as tm
@@ -92,7 +92,38 @@ def iterate_structure(
     iterations: int,
     origin: int | tuple[int, ...] | None = None,
 ) -> Tensor | tuple[Tensor, list[int]]:
-    """Iterate a binary structure by dilating it with itself."""
+    """Dilate a binary structuring element with itself repeatedly
+
+    The result is equivalent to applying the original structuring element
+    ``iterations`` times in a morphology operation. Nonzero input values are
+    treated as part of the structure.
+
+    Args:
+        structure (torch.Tensor): N-dimensional binary structuring element.
+        iterations (int): Number of copies to combine. Values below ``2``
+            return a boolean clone of ``structure``.
+        origin (int or tuple[int, ...], optional): Original anchor offset. A
+            scalar is applied to every dimension. When supplied, the adjusted
+            origin is returned with the iterated structure.
+
+    Returns:
+        torch.Tensor or tuple[torch.Tensor, list[int]]: Boolean iterated
+        structure. If ``origin`` is supplied, returns ``(structure, origin)``
+        with each origin component multiplied by ``iterations``.
+
+    Example:
+        ```pycon
+        >>> import torch
+        >>> import torchmorph as tm
+        >>> structure = tm.generate_binary_structure(2, 1)
+        >>> tm.iterate_structure(structure, 2).to(dtype=torch.int32)
+        tensor([[0, 0, 1, 0, 0],
+                [0, 1, 1, 1, 0],
+                [1, 1, 1, 1, 1],
+                [0, 1, 1, 1, 0],
+                [0, 0, 1, 0, 0]], dtype=torch.int32)
+        ```
+    """
     structure = structure != 0
 
     if iterations < 2:

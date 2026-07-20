@@ -21,7 +21,23 @@ dist = tm.euclidean_distance_transform(x)
 dilated = tm.binary_dilation(x)
 ```
 
+Spatial morphology and distance-transform functions accept CUDA tensors shaped
+as `(B, C, Spatial...)`, with one to eight spatial dimensions. Binary operators
+treat nonzero values as foreground.
+
+Optimal transport works on CPU and CUDA with batches of flattened histograms:
+
+```python
+source = torch.rand(8, 64, device="cuda")
+target = torch.rand(8, 64, device="cuda")
+
+solver = tm.SinkhornSolver(epsilon=1.0, max_iter=200)
+cost = tm.build_cost_matrix((8, 8), device=source.device)
+distances = solver(source, target, cost)
+```
+
 ## API Reference
 
 - [Distance Transforms](api/distance_transforms.md) — Euclidean, Chamfer, and brute-force distance transforms
-- [Morphological Operations](api/morphological_ops.md) — Binary dilation and erosion
+- [Morphological Operations](api/morphological_ops.md) — Structuring elements, binary morphology, and grayscale morphology
+- [Optimal Transport](api/optimal_transport.md) — Cost matrices and differentiable Sinkhorn transport

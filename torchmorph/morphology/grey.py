@@ -115,9 +115,37 @@ def grey_erosion(
     cval: float = 0.0,
     origin: int | tuple[int, ...] = 0,
 ) -> Tensor:
-    """N-dimensional grey erosion for ``(B, C, Spatial...)`` CUDA tensors.
+    """Erode a batched grayscale CUDA tensor
 
-    Computation uses float32. The result is float32 unless ``output`` is given.
+    Computes the local minimum after subtracting the non-flat ``structure``.
+    Computation uses ``float32`` and supports one to eight spatial dimensions.
+
+    Args:
+        input (torch.Tensor): CUDA tensor with shape ``(B, C, Spatial...)``.
+        size (int or tuple[int, ...], optional): Shape of a flat, full
+            structuring element. A scalar is broadcast to every spatial axis.
+        footprint (torch.Tensor, optional): Boolean mask selecting participating
+            positions. Must match ``structure`` when both are supplied.
+        structure (torch.Tensor, optional): Non-flat additive structuring
+            element. It takes precedence over ``footprint`` and ``size``.
+        output (torch.Tensor, optional): Preallocated result tensor with the
+            same shape and device as ``input``.
+        mode (str): Boundary mode: ``"reflect"``, ``"constant"``, ``"nearest"``,
+            ``"mirror"``, or ``"wrap"``.
+        cval (float): Boundary value used when ``mode="constant"``.
+        origin (int or tuple[int, ...]): Structuring-element anchor offset.
+
+    Returns:
+        torch.Tensor: Eroded tensor in ``float32``, or ``output`` when supplied.
+
+    Example:
+        ```pycon
+        >>> import torch
+        >>> import torchmorph as tm
+        >>> x = torch.arange(9, device="cuda").reshape(1, 1, 3, 3)
+        >>> tm.grey_erosion(x, size=3).shape
+        torch.Size([1, 1, 3, 3])
+        ```
     """
     return _grey_morphology(
         input,
@@ -142,9 +170,37 @@ def grey_dilation(
     cval: float = 0.0,
     origin: int | tuple[int, ...] = 0,
 ) -> Tensor:
-    """N-dimensional grey dilation for ``(B, C, Spatial...)`` CUDA tensors.
+    """Dilate a batched grayscale CUDA tensor
 
-    Computation uses float32. The result is float32 unless ``output`` is given.
+    Computes the local maximum after adding the non-flat ``structure``.
+    Computation uses ``float32`` and supports one to eight spatial dimensions.
+
+    Args:
+        input (torch.Tensor): CUDA tensor with shape ``(B, C, Spatial...)``.
+        size (int or tuple[int, ...], optional): Shape of a flat, full
+            structuring element. A scalar is broadcast to every spatial axis.
+        footprint (torch.Tensor, optional): Boolean mask selecting participating
+            positions. Must match ``structure`` when both are supplied.
+        structure (torch.Tensor, optional): Non-flat additive structuring
+            element. It takes precedence over ``footprint`` and ``size``.
+        output (torch.Tensor, optional): Preallocated result tensor with the
+            same shape and device as ``input``.
+        mode (str): Boundary mode: ``"reflect"``, ``"constant"``, ``"nearest"``,
+            ``"mirror"``, or ``"wrap"``.
+        cval (float): Boundary value used when ``mode="constant"``.
+        origin (int or tuple[int, ...]): Structuring-element anchor offset.
+
+    Returns:
+        torch.Tensor: Dilated tensor in ``float32``, or ``output`` when supplied.
+
+    Example:
+        ```pycon
+        >>> import torch
+        >>> import torchmorph as tm
+        >>> x = torch.arange(9, device="cuda").reshape(1, 1, 3, 3)
+        >>> tm.grey_dilation(x, size=3).dtype
+        torch.float32
+        ```
     """
     return _grey_morphology(
         input,
@@ -169,9 +225,38 @@ def grey_opening(
     cval: float = 0.0,
     origin: int | tuple[int, ...] = 0,
 ) -> Tensor:
-    """N-dimensional grey opening for ``(B, C, Spatial...)`` CUDA tensors.
+    """Open a grayscale tensor by erosion followed by dilation
 
-    Computation uses float32. The result is float32 unless ``output`` is given.
+    Opening suppresses bright features smaller than the selected structuring
+    element. Computation uses ``float32``.
+
+    Args:
+        input (torch.Tensor): CUDA tensor with shape ``(B, C, Spatial...)``.
+        size (int or tuple[int, ...], optional): Shape of a flat, full
+            structuring element.
+        footprint (torch.Tensor, optional): Boolean mask selecting participating
+            positions.
+        structure (torch.Tensor, optional): Non-flat additive structuring
+            element. It takes precedence over ``footprint`` and ``size``.
+        output (torch.Tensor, optional): Preallocated result tensor with the
+            same shape and device as ``input``.
+        mode (str): Boundary mode: ``"reflect"``, ``"constant"``, ``"nearest"``,
+            ``"mirror"``, or ``"wrap"``.
+        cval (float): Boundary value used when ``mode="constant"``.
+        origin (int or tuple[int, ...]): Structuring-element anchor offset.
+
+    Returns:
+        torch.Tensor: Opened tensor in ``float32``, or ``output`` when supplied.
+
+    Example:
+        ```pycon
+        >>> import torch
+        >>> import torchmorph as tm
+        >>> x = torch.zeros((1, 1, 5, 5), device="cuda")
+        >>> x[0, 0, 2, 2] = 1
+        >>> tm.grey_opening(x, size=3).max().item()
+        0.0
+        ```
     """
     kwargs = _element_kwargs(size, footprint, structure, mode, cval, origin)
     eroded = grey_erosion(input, **kwargs)
@@ -188,9 +273,38 @@ def grey_closing(
     cval: float = 0.0,
     origin: int | tuple[int, ...] = 0,
 ) -> Tensor:
-    """N-dimensional grey closing for ``(B, C, Spatial...)`` CUDA tensors.
+    """Close a grayscale tensor by dilation followed by erosion
 
-    Computation uses float32. The result is float32 unless ``output`` is given.
+    Closing suppresses dark features smaller than the selected structuring
+    element. Computation uses ``float32``.
+
+    Args:
+        input (torch.Tensor): CUDA tensor with shape ``(B, C, Spatial...)``.
+        size (int or tuple[int, ...], optional): Shape of a flat, full
+            structuring element.
+        footprint (torch.Tensor, optional): Boolean mask selecting participating
+            positions.
+        structure (torch.Tensor, optional): Non-flat additive structuring
+            element. It takes precedence over ``footprint`` and ``size``.
+        output (torch.Tensor, optional): Preallocated result tensor with the
+            same shape and device as ``input``.
+        mode (str): Boundary mode: ``"reflect"``, ``"constant"``, ``"nearest"``,
+            ``"mirror"``, or ``"wrap"``.
+        cval (float): Boundary value used when ``mode="constant"``.
+        origin (int or tuple[int, ...]): Structuring-element anchor offset.
+
+    Returns:
+        torch.Tensor: Closed tensor in ``float32``, or ``output`` when supplied.
+
+    Example:
+        ```pycon
+        >>> import torch
+        >>> import torchmorph as tm
+        >>> x = torch.ones((1, 1, 5, 5), device="cuda")
+        >>> x[0, 0, 2, 2] = 0
+        >>> tm.grey_closing(x, size=3).min().item()
+        1.0
+        ```
     """
     kwargs = _element_kwargs(size, footprint, structure, mode, cval, origin)
     dilated = grey_dilation(input, **kwargs)
@@ -207,7 +321,38 @@ def morphological_gradient(
     cval: float = 0.0,
     origin: int | tuple[int, ...] = 0,
 ) -> Tensor:
-    """N-dimensional morphological gradient for ``(B, C, Spatial...)`` CUDA tensors."""
+    """Compute the morphological gradient of a grayscale tensor
+
+    The gradient is ``dilation(input) - erosion(input)`` and emphasizes local
+    intensity transitions.
+
+    Args:
+        input (torch.Tensor): CUDA tensor with shape ``(B, C, Spatial...)``.
+        size (int or tuple[int, ...], optional): Shape of a flat, full
+            structuring element.
+        footprint (torch.Tensor, optional): Boolean mask selecting participating
+            positions.
+        structure (torch.Tensor, optional): Non-flat additive structuring
+            element. It takes precedence over ``footprint`` and ``size``.
+        output (torch.Tensor, optional): Preallocated result tensor with the
+            same shape and device as ``input``.
+        mode (str): Boundary mode: ``"reflect"``, ``"constant"``, ``"nearest"``,
+            ``"mirror"``, or ``"wrap"``.
+        cval (float): Boundary value used when ``mode="constant"``.
+        origin (int or tuple[int, ...]): Structuring-element anchor offset.
+
+    Returns:
+        torch.Tensor: Morphological gradient in ``float32``, or ``output``.
+
+    Example:
+        ```pycon
+        >>> import torch
+        >>> import torchmorph as tm
+        >>> x = torch.arange(25, device="cuda").reshape(1, 1, 5, 5)
+        >>> tm.morphological_gradient(x, size=3).shape
+        torch.Size([1, 1, 5, 5])
+        ```
+    """
     validate_bcs_input(input)
     validate_output(input, output)
 
@@ -231,7 +376,38 @@ def white_tophat(
     cval: float = 0.0,
     origin: int | tuple[int, ...] = 0,
 ) -> Tensor:
-    """N-dimensional white top-hat filter for ``(B, C, Spatial...)`` CUDA tensors."""
+    """Extract small bright features with a white top-hat filter
+
+    Computes ``input - grey_opening(input)`` using ``float32`` arithmetic.
+
+    Args:
+        input (torch.Tensor): CUDA tensor with shape ``(B, C, Spatial...)``.
+        size (int or tuple[int, ...], optional): Shape of a flat, full
+            structuring element.
+        footprint (torch.Tensor, optional): Boolean mask selecting participating
+            positions.
+        structure (torch.Tensor, optional): Non-flat additive structuring
+            element. It takes precedence over ``footprint`` and ``size``.
+        output (torch.Tensor, optional): Preallocated result tensor with the
+            same shape and device as ``input``.
+        mode (str): Boundary mode: ``"reflect"``, ``"constant"``, ``"nearest"``,
+            ``"mirror"``, or ``"wrap"``.
+        cval (float): Boundary value used when ``mode="constant"``.
+        origin (int or tuple[int, ...]): Structuring-element anchor offset.
+
+    Returns:
+        torch.Tensor: White top-hat response in ``float32``, or ``output``.
+
+    Example:
+        ```pycon
+        >>> import torch
+        >>> import torchmorph as tm
+        >>> x = torch.zeros((1, 1, 5, 5), device="cuda")
+        >>> x[0, 0, 2, 2] = 2
+        >>> tm.white_tophat(x, size=3).max().item()
+        2.0
+        ```
+    """
     validate_bcs_input(input)
     validate_output(input, output)
 
@@ -253,7 +429,38 @@ def black_tophat(
     cval: float = 0.0,
     origin: int | tuple[int, ...] = 0,
 ) -> Tensor:
-    """N-dimensional black top-hat filter for ``(B, C, Spatial...)`` CUDA tensors."""
+    """Extract small dark features with a black top-hat filter
+
+    Computes ``grey_closing(input) - input`` using ``float32`` arithmetic.
+
+    Args:
+        input (torch.Tensor): CUDA tensor with shape ``(B, C, Spatial...)``.
+        size (int or tuple[int, ...], optional): Shape of a flat, full
+            structuring element.
+        footprint (torch.Tensor, optional): Boolean mask selecting participating
+            positions.
+        structure (torch.Tensor, optional): Non-flat additive structuring
+            element. It takes precedence over ``footprint`` and ``size``.
+        output (torch.Tensor, optional): Preallocated result tensor with the
+            same shape and device as ``input``.
+        mode (str): Boundary mode: ``"reflect"``, ``"constant"``, ``"nearest"``,
+            ``"mirror"``, or ``"wrap"``.
+        cval (float): Boundary value used when ``mode="constant"``.
+        origin (int or tuple[int, ...]): Structuring-element anchor offset.
+
+    Returns:
+        torch.Tensor: Black top-hat response in ``float32``, or ``output``.
+
+    Example:
+        ```pycon
+        >>> import torch
+        >>> import torchmorph as tm
+        >>> x = torch.ones((1, 1, 5, 5), device="cuda")
+        >>> x[0, 0, 2, 2] = 0
+        >>> tm.black_tophat(x, size=3).max().item()
+        1.0
+        ```
+    """
     validate_bcs_input(input)
     validate_output(input, output)
 
@@ -275,7 +482,38 @@ def morphological_laplace(
     cval: float = 0.0,
     origin: int | tuple[int, ...] = 0,
 ) -> Tensor:
-    """N-dimensional morphological Laplace for ``(B, C, Spatial...)`` CUDA tensors."""
+    """Compute the morphological Laplacian of a grayscale tensor
+
+    Computes ``dilation(input) + erosion(input) - 2 * input`` using ``float32``
+    arithmetic.
+
+    Args:
+        input (torch.Tensor): CUDA tensor with shape ``(B, C, Spatial...)``.
+        size (int or tuple[int, ...], optional): Shape of a flat, full
+            structuring element.
+        footprint (torch.Tensor, optional): Boolean mask selecting participating
+            positions.
+        structure (torch.Tensor, optional): Non-flat additive structuring
+            element. It takes precedence over ``footprint`` and ``size``.
+        output (torch.Tensor, optional): Preallocated result tensor with the
+            same shape and device as ``input``.
+        mode (str): Boundary mode: ``"reflect"``, ``"constant"``, ``"nearest"``,
+            ``"mirror"``, or ``"wrap"``.
+        cval (float): Boundary value used when ``mode="constant"``.
+        origin (int or tuple[int, ...]): Structuring-element anchor offset.
+
+    Returns:
+        torch.Tensor: Morphological Laplacian in ``float32``, or ``output``.
+
+    Example:
+        ```pycon
+        >>> import torch
+        >>> import torchmorph as tm
+        >>> x = torch.arange(25, device="cuda").reshape(1, 1, 5, 5)
+        >>> tm.morphological_laplace(x, size=3).dtype
+        torch.float32
+        ```
+    """
     validate_bcs_input(input)
     validate_output(input, output)
 
