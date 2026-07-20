@@ -1,37 +1,28 @@
 import torch
-import torch.nn.functional as F
 from torch import Tensor
 
-from ._convnd import conv_nd
-from .structure import generate_binary_structure
+from .. import _C
+from .._validation import validate_bcs_input, validate_output
+from .structure import _normalize_origin, _validate_origin, generate_binary_structure
 
 
-def _prepare_origin(origin: int | tuple[int, ...], ndim=int) -> tuple[int, ...]:
-    """change the origin into tuple"""
-    if isinstance(origin, int):
-        return (origin,) * ndim
-    origin = tuple(origin)
-
-    if (len(origin)) != ndim:
-        raise ValueError(f"origin dimension is not {ndim}, got {len(origin)}")
-
-    return origin
+def _normalize_structure(structure: Tensor, spatial_ndim: int, name: str = "structure") -> Tensor:
+    if structure.ndim != spatial_ndim:
+        raise ValueError(f"{name} dimension is not {spatial_ndim}, got {structure.ndim}")
+    return (structure != 0).detach().to(device="cpu", dtype=torch.bool).contiguous()
 
 
-def _extend_pad(kernel_shape: torch.Size, origin: tuple[int, ...]) -> list[int]:
-    """extend the padlist for kernel"""
-    pad = []
-    for dim in range(len(kernel_shape) - 1, -1, -1):
-        center = kernel_shape[dim] // 2
-        pad_before = center + origin[dim]
-        pad_after = kernel_shape[dim] - 1 - pad_before
-        pad.extend([pad_before, pad_after])
-    return pad
-
-
-def _flip_structure(structure: Tensor) -> Tensor:
-    dim = tuple(range(structure.ndim))
-    return torch.flip(structure, dim)
+def _binary_morphology_cuda_step(
+    input: Tensor,
+    structure: Tensor,
+    border_value: bool,
+    origin: tuple[int, ...],
+    *,
+    mode: str,
+) -> Tensor:
+    x = input if input.dtype == torch.bool and input.is_contiguous() else (input != 0).contiguous()
+    kernel = _C.binary_erosion_cuda if mode == "erosion" else _C.binary_dilation_cuda
+    return kernel(x, structure, list(origin), bool(border_value))
 
 
 def _binary_morphology(
@@ -45,67 +36,52 @@ def _binary_morphology(
     *,
     mode: str,
 ) -> Tensor:
-    iterations_flag = iterations < 1
-
-    spatial_ndim = input.ndim - 2
+    iterate_until_stable = iterations < 1
+    spatial_ndim = validate_bcs_input(input)
+    validate_output(input, output)
 
     if structure is None:
         structure = generate_binary_structure(spatial_ndim, 1)
+    structure = _normalize_structure(structure, spatial_ndim)
 
-    batch, channels = input.shape[:2]
-    spatial_shape = input.shape[2:]
+    origin = _normalize_origin(origin, spatial_ndim)
+    _validate_origin(origin, structure)
+    x = input != 0
+    input_bool = x
+    if mask is not None and mask.shape != input.shape:
+        raise ValueError(f"mask shape {mask.shape} must match input shape {input.shape}")
+    mask_bool = mask.to(device=input.device, dtype=torch.bool) if mask is not None else None
+    structure_is_empty = not structure.any().item()
 
-    x = (input != 0).to(dtype=torch.float32).reshape(batch * channels, 1, *spatial_shape)
-    structure = (structure != 0).to(device=input.device, dtype=torch.float32)
-    if mode == "dilation":
-        structure = _flip_structure(structure)
-    kernel = structure.unsqueeze(0).unsqueeze(0)
-    kernel_sum = kernel.sum()
-
-    origin = _prepare_origin(origin, spatial_ndim)
-    if mode == "dilation":
-        origin = tuple(-value for value in origin)
-    pad = _extend_pad(structure.shape, origin)
-    pad_value = float(bool(border_value))
-
-    if mask is not None:
-        mask_flat = mask.to(dtype=torch.bool).reshape(batch * channels, 1, *spatial_shape)
-        input_flat = (
-            (input != 0).to(dtype=torch.float32).reshape(batch * channels, 1, *spatial_shape)
+    def step(value: Tensor) -> Tensor:
+        if structure_is_empty:
+            return torch.full_like(value, mode == "erosion", dtype=torch.bool)
+        return _binary_morphology_cuda_step(
+            value,
+            structure,
+            border_value,
+            origin,
+            mode=mode,
         )
-    else:
-        mask_flat = None
-        input_flat = None
 
-    if iterations_flag:
+    if iterate_until_stable:
         old = None
         while True:
-            x_padded = F.pad(x, pad, value=pad_value)
-            conv = conv_nd(x_padded, kernel)
-            if mode == "erosion":
-                x = (conv == kernel_sum).to(dtype=torch.float32)
-            else:
-                x = (conv > 0).to(dtype=torch.float32)
-            if mask_flat is not None:
-                x = torch.where(mask_flat, x, input_flat)
+            x = step(x)
+            if mask_bool is not None:
+                x = torch.where(mask_bool, x, input_bool)
 
             if old is not None and torch.equal(x, old):
                 break
 
-            old = x.clone()
+            old = x
     else:
         for _ in range(iterations):
-            x_padded = F.pad(x, pad, value=pad_value)
-            conv = conv_nd(x_padded, kernel)
-            if mode == "erosion":
-                x = (conv == kernel_sum).to(dtype=torch.float32)
-            else:
-                x = (conv > 0).to(dtype=torch.float32)
+            x = step(x)
+            if mask_bool is not None:
+                x = torch.where(mask_bool, x, input_bool)
 
-            if mask_flat is not None:
-                x = torch.where(mask_flat, x, input_flat)
-
-    result = x.reshape(batch, channels, *spatial_shape).to(dtype=torch.bool)
+    result = x.to(dtype=torch.bool)
     if output is not None:
         output.copy_(result)
         return output
@@ -121,46 +97,10 @@ def binary_erosion(
     border_value: bool = False,
     origin: int | tuple[int, ...] = 0,
 ) -> Tensor:
-    """Erode foreground regions in an N-dimensional binary tensor
+    """
+    N-dimensional binary erosion for `(B, C, Spatial...)` CUDA tensors.
 
-    Treats non-zero input values as foreground and applies binary erosion to
-    each ``(B, C)`` sample independently. A foreground value survives only when
-    every active element of the structuring element overlaps foreground.
-
-    Args:
-        input (torch.Tensor): Tensor with shape ``(B, C, *spatial)``. Non-zero
-            values are treated as foreground.
-        structure (Optional[torch.Tensor]): Structuring element with one axis
-            per spatial dimension. Non-zero values are active. If ``None``, a
-            rank-matched connectivity-1 structure is generated.
-        iterations (int): Number of erosion passes. Values less than ``1`` run
-            until the result no longer changes.
-        mask (Optional[torch.Tensor]): Boolean mask that restricts which output
-            locations may change. Use the same ``(B, C, *spatial)`` layout as
-            ``input``.
-        output (Optional[torch.Tensor]): Optional tensor to fill in-place with
-            the boolean result. The same tensor is returned.
-        border_value (bool): Value assumed outside the spatial boundary.
-        origin (int | tuple[int, ...]): Structuring-element origin offset. A
-            scalar is applied to every spatial dimension; a tuple must match the
-            number of spatial dimensions.
-
-    Returns:
-        torch.Tensor: Boolean tensor with the same shape as ``input``.
-
-    Examples:
-        ```pycon
-        >>> import torch
-        >>> import torchmorph as tm
-        >>> x = torch.ones(1, 1, 5, 5)
-        >>> x[0, 0, 0, :] = 0
-        >>> tm.binary_erosion(x).to(torch.int32)[0, 0]
-        tensor([[0, 0, 0, 0, 0],
-                [0, 0, 0, 0, 0],
-                [0, 1, 1, 1, 0],
-                [0, 1, 1, 1, 0],
-                [0, 0, 0, 0, 0]], dtype=torch.int32)
-        ```
+    For a single image or volume, add batch and channel dimensions first.
     """
     return _binary_morphology(
         input=input,
@@ -183,47 +123,7 @@ def binary_dilation(
     border_value: bool = False,
     origin: int | tuple[int, ...] = 0,
 ) -> Tensor:
-    """Dilate foreground regions in an N-dimensional binary tensor
-
-    Treats non-zero input values as foreground and applies binary dilation to
-    each ``(B, C)`` sample independently. A location becomes foreground when any
-    active element of the structuring element overlaps foreground.
-
-    Args:
-        input (torch.Tensor): Tensor with shape ``(B, C, *spatial)``. Non-zero
-            values are treated as foreground.
-        structure (Optional[torch.Tensor]): Structuring element with one axis
-            per spatial dimension. Non-zero values are active. If ``None``, a
-            rank-matched connectivity-1 structure is generated.
-        iterations (int): Number of dilation passes. Values less than ``1`` run
-            until the result no longer changes.
-        mask (Optional[torch.Tensor]): Boolean mask that restricts which output
-            locations may change. Use the same ``(B, C, *spatial)`` layout as
-            ``input``.
-        output (Optional[torch.Tensor]): Optional tensor to fill in-place with
-            the boolean result. The same tensor is returned.
-        border_value (bool): Value assumed outside the spatial boundary.
-        origin (int | tuple[int, ...]): Structuring-element origin offset. A
-            scalar is applied to every spatial dimension; a tuple must match the
-            number of spatial dimensions.
-
-    Returns:
-        torch.Tensor: Boolean tensor with the same shape as ``input``.
-
-    Examples:
-        ```pycon
-        >>> import torch
-        >>> import torchmorph as tm
-        >>> x = torch.zeros(1, 1, 5, 5)
-        >>> x[0, 0, 2, 2] = 1
-        >>> tm.binary_dilation(x).to(torch.int32)[0, 0]
-        tensor([[0, 0, 0, 0, 0],
-                [0, 0, 1, 0, 0],
-                [0, 1, 1, 1, 0],
-                [0, 0, 1, 0, 0],
-                [0, 0, 0, 0, 0]], dtype=torch.int32)
-        ```
-    """
+    """N-dimensional binary dilation for `(B, C, Spatial...)` CUDA tensors."""
     return _binary_morphology(
         input,
         structure,
@@ -236,6 +136,98 @@ def binary_dilation(
     )
 
 
+def binary_propagation(
+    input: Tensor,
+    structure: Tensor | None = None,
+    mask: Tensor | None = None,
+    output: Tensor | None = None,
+    border_value: bool = False,
+    origin: int | tuple[int, ...] = 0,
+) -> Tensor:
+    """N-dimensional binary propagation for `(B, C, Spatial...)` CUDA tensors."""
+    return _binary_morphology(
+        input,
+        structure,
+        -1,
+        mask,
+        output,
+        border_value,
+        origin,
+        mode="dilation",
+    )
+
+
+def binary_fill_holes(
+    input: Tensor,
+    structure: Tensor | None = None,
+    output: Tensor | None = None,
+    origin: int | tuple[int, ...] = 0,
+) -> Tensor:
+    """Fill holes in binary objects for `(B, C, Spatial...)` CUDA tensors."""
+    validate_bcs_input(input)
+    validate_output(input, output)
+
+    mask = input == 0
+    seed = torch.zeros_like(mask, dtype=torch.bool)
+    background = binary_propagation(
+        seed,
+        structure=structure,
+        mask=mask,
+        output=None,
+        border_value=True,
+        origin=origin,
+    )
+    result = torch.logical_not(background)
+
+    if output is not None:
+        output.copy_(result)
+        return output
+    return result
+
+
+def binary_hit_or_miss(
+    input: Tensor,
+    structure1: Tensor | None = None,
+    structure2: Tensor | None = None,
+    output: Tensor | None = None,
+    origin1: int | tuple[int, ...] = 0,
+    origin2: int | tuple[int, ...] | None = None,
+) -> Tensor:
+    """N-dimensional binary hit-or-miss transform for `(B, C, Spatial...)` CUDA tensors."""
+    spatial_ndim = validate_bcs_input(input)
+    validate_output(input, output)
+    origin1 = _normalize_origin(origin1, spatial_ndim)
+    origin2 = origin1 if origin2 is None else _normalize_origin(origin2, spatial_ndim)
+
+    if structure1 is None:
+        structure1 = generate_binary_structure(spatial_ndim, 1)
+    structure1 = _normalize_structure(structure1, spatial_ndim, "structure1")
+    _validate_origin(origin1, structure1, "origin1")
+
+    if structure2 is None:
+        structure2 = torch.logical_not(structure1).contiguous()
+    else:
+        structure2 = _normalize_structure(structure2, spatial_ndim, "structure2")
+    _validate_origin(origin2, structure2, "origin2")
+
+    input_bool = input != 0
+    if structure1.any().item():
+        hit = binary_erosion(input_bool, structure=structure1, origin=origin1)
+    else:
+        hit = torch.ones_like(input_bool, dtype=torch.bool)
+
+    if structure2.any().item():
+        miss = binary_erosion(input_bool == 0, structure=structure2, origin=origin2)
+        result = torch.logical_and(hit, miss)
+    else:
+        result = hit
+
+    if output is not None:
+        output.copy_(result)
+        return output
+    return result
+
+
 def binary_opening(
     input: Tensor,
     structure: Tensor | None = None,
@@ -245,50 +237,13 @@ def binary_opening(
     border_value: bool = False,
     origin: int | tuple[int, ...] = 0,
 ) -> Tensor:
-    """Remove small foreground components with binary opening
-
-    Opening is erosion followed by dilation using the same structuring element.
-    The operation is applied independently to each ``(B, C)`` sample of an
-    ``(B, C, *spatial)`` tensor.
-
-    Args:
-        input (torch.Tensor): Tensor with shape ``(B, C, *spatial)``. Non-zero
-            values are treated as foreground.
-        structure (Optional[torch.Tensor]): Structuring element with one axis
-            per spatial dimension. If ``None``, a rank-matched connectivity-1
-            structure is generated.
-        iterations (int): Number of erosions followed by the same number of
-            dilations. Values less than ``1`` run each stage until convergence.
-        mask (Optional[torch.Tensor]): Boolean mask in the same
-            ``(B, C, *spatial)`` layout restricting which locations may change.
-        output (Optional[torch.Tensor]): Optional tensor to fill in-place.
-        border_value (bool): Value assumed outside the spatial boundary.
-        origin (int | tuple[int, ...]): Structuring-element origin offset.
-
-    Returns:
-        torch.Tensor: Boolean tensor with the same shape as ``input``.
-
-    Examples:
-        ```pycon
-        >>> import torch
-        >>> import torchmorph as tm
-        >>> x = torch.zeros(1, 1, 5, 5)
-        >>> x[0, 0, 1:4, 1:4] = 1
-        >>> x[0, 0, 0, 0] = 1
-        >>> tm.binary_opening(x).to(torch.int32)[0, 0]
-        tensor([[0, 0, 0, 0, 0],
-                [0, 0, 1, 0, 0],
-                [0, 1, 1, 1, 0],
-                [0, 0, 1, 0, 0],
-                [0, 0, 0, 0, 0]], dtype=torch.int32)
-        ```
-    """
+    """N-dimensional binary opening for `(B, C, Spatial...)` CUDA tensors."""
     x = binary_erosion(
         input,
         structure,
         iterations,
         mask,
-        output,
+        None,
         border_value,
         origin,
     )
@@ -313,49 +268,13 @@ def binary_closing(
     border_value: bool = False,
     origin: int | tuple[int, ...] = 0,
 ) -> Tensor:
-    """Fill small background gaps with binary closing
-
-    Closing is dilation followed by erosion using the same structuring element.
-    The operation is applied independently to each ``(B, C)`` sample of an
-    ``(B, C, *spatial)`` tensor.
-
-    Args:
-        input (torch.Tensor): Tensor with shape ``(B, C, *spatial)``. Non-zero
-            values are treated as foreground.
-        structure (Optional[torch.Tensor]): Structuring element with one axis
-            per spatial dimension. If ``None``, a rank-matched connectivity-1
-            structure is generated.
-        iterations (int): Number of dilations followed by the same number of
-            erosions. Values less than ``1`` run each stage until convergence.
-        mask (Optional[torch.Tensor]): Boolean mask in the same
-            ``(B, C, *spatial)`` layout restricting which locations may change.
-        output (Optional[torch.Tensor]): Optional tensor to fill in-place.
-        border_value (bool): Value assumed outside the spatial boundary.
-        origin (int | tuple[int, ...]): Structuring-element origin offset.
-
-    Returns:
-        torch.Tensor: Boolean tensor with the same shape as ``input``.
-
-    Examples:
-        ```pycon
-        >>> import torch
-        >>> import torchmorph as tm
-        >>> x = torch.ones(1, 1, 5, 5)
-        >>> x[0, 0, 2, 2] = 0
-        >>> tm.binary_closing(x, border_value=True).to(torch.int32)[0, 0]
-        tensor([[1, 1, 1, 1, 1],
-                [1, 1, 1, 1, 1],
-                [1, 1, 1, 1, 1],
-                [1, 1, 1, 1, 1],
-                [1, 1, 1, 1, 1]], dtype=torch.int32)
-        ```
-    """
+    """N-dimensional binary closing for `(B, C, Spatial...)` CUDA tensors."""
     x = binary_dilation(
         input,
         structure,
         iterations,
         mask,
-        output,
+        None,
         border_value,
         origin,
     )

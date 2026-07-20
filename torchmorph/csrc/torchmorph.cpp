@@ -1,15 +1,42 @@
 #include <torch/extension.h>
 
-// Declare CUDA implementations
-torch::Tensor add_cuda(torch::Tensor input, float scalar);
+torch::Tensor grey_erosion_cuda(
+    torch::Tensor input,
+    torch::Tensor structure,
+    torch::Tensor footprint,
+    std::vector<int64_t> origin,
+    int mode,
+    float cval
+);
 
-// Distance Transform functions
+torch::Tensor grey_dilation_cuda(
+    torch::Tensor input,
+    torch::Tensor structure,
+    torch::Tensor footprint,
+    std::vector<int64_t> origin,
+    int mode,
+    float cval
+);
+
+torch::Tensor binary_erosion_cuda(
+    torch::Tensor input,
+    torch::Tensor structure,
+    std::vector<int64_t> origin,
+    bool border_value
+);
+
+torch::Tensor binary_dilation_cuda(
+    torch::Tensor input,
+    torch::Tensor structure,
+    std::vector<int64_t> origin,
+    bool border_value
+);
+
 std::tuple<torch::Tensor, torch::Tensor> edt_cuda(
     torch::Tensor input,
     std::vector<float> sampling,
     bool return_distances,
-    bool return_indices,
-    const std::string& algorithm
+    bool return_indices
 );
 
 std::tuple<torch::Tensor, torch::Tensor> cdt_cuda(
@@ -27,30 +54,103 @@ std::tuple<torch::Tensor, torch::Tensor> bfdt_cuda(
     bool return_indices
 );
 
+// Optimal Transport functions
+std::tuple<torch::Tensor, torch::Tensor> sinkhorn_fastiter(
+    const torch::Tensor& a,
+    const torch::Tensor& b,
+    const torch::Tensor& K,
+    const torch::Tensor& K_T,
+    torch::Tensor u,
+    torch::Tensor v,
+    int64_t n_iter
+);
+
+std::tuple<torch::Tensor, torch::Tensor> sinkhorn_logiter(
+    const torch::Tensor& log_a,
+    const torch::Tensor& log_b,
+    const torch::Tensor& M,
+    const torch::Tensor& M_T,
+    torch::Tensor log_u,
+    torch::Tensor log_v,
+    int64_t n_iter,
+    double epsilon
+);
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def("add_cuda", &add_cuda, "Add tensor with scalar");
+    m.def("grey_erosion_cuda", &grey_erosion_cuda,
+          "N-dimensional fused grey erosion",
+          py::arg("input"),
+          py::arg("structure"),
+          py::arg("footprint"),
+          py::arg("origin"),
+          py::arg("mode"),
+          py::arg("cval"));
 
-    // Distance Transform
+    m.def("grey_dilation_cuda", &grey_dilation_cuda,
+          "N-dimensional fused grey dilation",
+          py::arg("input"),
+          py::arg("structure"),
+          py::arg("footprint"),
+          py::arg("origin"),
+          py::arg("mode"),
+          py::arg("cval"));
+
+    m.def("binary_erosion_cuda", &binary_erosion_cuda,
+          "N-dimensional fused binary erosion",
+          py::arg("input"),
+          py::arg("structure"),
+          py::arg("origin"),
+          py::arg("border_value"));
+
+    m.def("binary_dilation_cuda", &binary_dilation_cuda,
+          "N-dimensional fused binary dilation",
+          py::arg("input"),
+          py::arg("structure"),
+          py::arg("origin"),
+          py::arg("border_value"));
+
     m.def("edt_cuda", &edt_cuda,
           "Exact Euclidean Distance Transform (Felzenszwalb algorithm)",
           py::arg("input"),
           py::arg("sampling"),
           py::arg("return_distances") = true,
-          py::arg("return_indices") = false,
-          py::arg("algorithm") = "exact");
+          py::arg("return_indices") = false);
+
     m.def("cdt_cuda", &cdt_cuda,
-          "Chamfer Distance Transform",
+          "Chessboard/Manhattan distance transform",
           py::arg("input"),
           py::arg("metric") = "chessboard",
           py::arg("return_distances") = true,
           py::arg("return_indices") = false);
 
     m.def("bfdt_cuda", &bfdt_cuda,
-          "Brute-Force Distance Transform",
+          "Brute-force distance transform",
           py::arg("input"),
           py::arg("metric") = "euclidean",
           py::arg("sampling") = std::vector<float>(),
           py::arg("return_distances") = true,
           py::arg("return_indices") = false);
+
+    // Optimal Transport
+    m.def("sinkhorn_fastiter", &sinkhorn_fastiter,
+          "Sinkhorn scaling-form iterations (CUDA)",
+          py::arg("a"),
+          py::arg("b"),
+          py::arg("K"),
+          py::arg("K_T"),
+          py::arg("u"),
+          py::arg("v"),
+          py::arg("n_iter"));
+
+    m.def("sinkhorn_logiter", &sinkhorn_logiter,
+          "Sinkhorn log-domain iterations (CUDA)",
+          py::arg("log_a"),
+          py::arg("log_b"),
+          py::arg("M"),
+          py::arg("M_T"),
+          py::arg("log_u"),
+          py::arg("log_v"),
+          py::arg("n_iter"),
+          py::arg("epsilon"));
 }
+

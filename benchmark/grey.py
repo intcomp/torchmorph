@@ -9,30 +9,32 @@ import torchmorph as tm
 
 IMAGE_SIZES = [64, 128, 256, 1024]
 BATCH_SIZES = [1, 2, 4, 16]
+STRUCTURE_SIZE = 3
 MIN_RUN_TIME = 1.0
 
-BINARY_OPERATORS = {
-    "erosion": (ndi.binary_erosion, tm.binary_erosion),
-    "dilation": (ndi.binary_dilation, tm.binary_dilation),
-    "fill_holes": (ndi.binary_fill_holes, tm.binary_fill_holes),
-    "hit_or_miss": (ndi.binary_hit_or_miss, tm.binary_hit_or_miss),
-    "opening": (ndi.binary_opening, tm.binary_opening),
-    "closing": (ndi.binary_closing, tm.binary_closing),
-    "propagation": (ndi.binary_propagation, tm.binary_propagation),
+GREY_OPERATORS = {
+    "erosion": (ndi.grey_erosion, tm.grey_erosion),
+    "dilation": (ndi.grey_dilation, tm.grey_dilation),
+    "opening": (ndi.grey_opening, tm.grey_opening),
+    "closing": (ndi.grey_closing, tm.grey_closing),
+    "gradient": (ndi.morphological_gradient, tm.morphological_gradient),
+    "laplace": (ndi.morphological_laplace, tm.morphological_laplace),
+    "white_tophat": (ndi.white_tophat, tm.white_tophat),
+    "black_tophat": (ndi.black_tophat, tm.black_tophat),
 }
 
 
-def run_cuda(torch_op, x):
-    result = torch_op(x)
+def run_cuda(torch_op, x, structure_size):
+    result = torch_op(x, size=structure_size)
     torch.cuda.synchronize()
     return result
 
 
-def bench_binary_operator(operation, image_sizes, batch_sizes, min_run_time):
-    scipy_op, torch_op = BINARY_OPERATORS[operation]
+def bench_grey_operator(operation, image_sizes, batch_sizes, structure_size, min_run_time):
+    scipy_op, torch_op = GREY_OPERATORS[operation]
 
     print("\n============================================")
-    print(f" Benchmark: binary {operation} ")
+    print(f" Benchmark: grey {operation} ")
     print("============================================")
 
     for batch_size in batch_sizes:
@@ -49,39 +51,47 @@ def bench_binary_operator(operation, image_sizes, batch_sizes, min_run_time):
             table.align[column] = "r"
 
         for image_size in image_sizes:
-            x = (torch.randn(batch_size, 1, image_size, image_size, device="cuda") > 0).to(
-                torch.float32
+            x = torch.randn(
+                batch_size,
+                1,
+                image_size,
+                image_size,
+                device="cuda",
+                dtype=torch.float32,
             )
             x_np_list = [x[i, 0].detach().cpu().numpy() for i in range(batch_size)]
             x_one = [x[i : i + 1] for i in range(batch_size)]
 
             scipy_time = benchmark.Timer(
-                stmt="[scipy_op(data) for data in inputs]",
+                stmt="[scipy_op(data, size=structure_size) for data in inputs]",
                 globals={
                     "scipy_op": scipy_op,
+                    "structure_size": structure_size,
                     "inputs": x_np_list,
                 },
             ).blocked_autorange(min_run_time=min_run_time)
 
             for data in x_one:
-                torch_op(data)
+                torch_op(data, size=structure_size)
             torch.cuda.synchronize()
 
             torch_single_time = benchmark.Timer(
-                stmt="[run_cuda(torch_op, data) for data in inputs]",
+                stmt="[run_cuda(torch_op, data, structure_size) for data in inputs]",
                 globals={
                     "run_cuda": run_cuda,
                     "torch_op": torch_op,
                     "inputs": x_one,
+                    "structure_size": structure_size,
                 },
             ).blocked_autorange(min_run_time=min_run_time)
 
             torch_batch_time = benchmark.Timer(
-                stmt="run_cuda(torch_op, x)",
+                stmt="run_cuda(torch_op, x, structure_size)",
                 globals={
                     "run_cuda": run_cuda,
                     "torch_op": torch_op,
                     "x": x,
+                    "structure_size": structure_size,
                 },
             ).blocked_autorange(min_run_time=min_run_time)
 
@@ -105,8 +115,8 @@ def bench_binary_operator(operation, image_sizes, batch_sizes, min_run_time):
 
 
 def main():
-    choices = (*BINARY_OPERATORS, "all")
-    parser = argparse.ArgumentParser(description="Benchmark binary morphology operators.")
+    choices = (*GREY_OPERATORS, "all")
+    parser = argparse.ArgumentParser(description="Benchmark grey morphology operators.")
     parser.add_argument(
         "operation",
         choices=choices,
@@ -129,6 +139,12 @@ def main():
         help="Batch sizes to benchmark (default: 1 2 4 16).",
     )
     parser.add_argument(
+        "--structure-size",
+        type=int,
+        default=STRUCTURE_SIZE,
+        help="Square structuring element size (default: 3).",
+    )
+    parser.add_argument(
         "--min-run-time",
         type=float,
         default=MIN_RUN_TIME,
@@ -136,12 +152,13 @@ def main():
     )
     args = parser.parse_args()
 
-    operations = BINARY_OPERATORS if args.operation == "all" else (args.operation,)
+    operations = GREY_OPERATORS if args.operation == "all" else (args.operation,)
     for operation in operations:
-        bench_binary_operator(
+        bench_grey_operator(
             operation,
             image_sizes=args.sizes,
             batch_sizes=args.batches,
+            structure_size=args.structure_size,
             min_run_time=args.min_run_time,
         )
 
