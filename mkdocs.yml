@@ -51,5 +51,7 @@ nav:
   - Home: index.md
   - API Reference:
       - Distance Transforms: api/distance_transforms.md
-      - Morphological Operations: api/morphological_ops.md
+      - Structuring Elements: api/structuring_elements.md
+      - Binary Morphology: api/binary_morphology.md
+      - Grayscale Morphology: api/grayscale_morphology.md
       - Optimal Transport: api/optimal_transport.md
