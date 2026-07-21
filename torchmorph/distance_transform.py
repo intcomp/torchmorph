@@ -77,7 +77,43 @@ def euclidean_distance_transform(
     distances: Tensor | None = None,
     indices: Tensor | None = None,
 ) -> Tensor | tuple[Tensor, Tensor] | None:
-    """Euclidean distance transform for (B, C, Spatial...) CUDA tensors."""
+    """Compute the exact Euclidean distance to the nearest background point
+
+    Distances are computed independently for each batch and channel. Nonzero
+    input values are foreground and zero values are background.
+
+    Args:
+        input (torch.Tensor): CUDA tensor with shape ``(B, C, Spatial...)``.
+        sampling (float or sequence[float], optional): Positive spacing along
+            each spatial axis. A scalar or one-element sequence is broadcast.
+        return_distances (bool): Return a newly allocated distance tensor unless
+            ``distances`` is supplied.
+        return_indices (bool): Return a newly allocated nearest-background index
+            tensor unless ``indices`` is supplied.
+        distances (torch.Tensor, optional): Preallocated distance output with
+            the same shape and device as ``input``. Supplying it enables
+            distance computation regardless of ``return_distances``.
+        indices (torch.Tensor, optional): Preallocated index output with shape
+            ``(spatial_ndim, *input.shape)`` on the input device. Supplying it
+            enables index computation regardless of ``return_indices``.
+
+    Returns:
+        torch.Tensor, tuple[torch.Tensor, torch.Tensor], or None: Requested
+        newly allocated outputs. Distances have ``float32`` dtype and input
+        shape; indices have ``int32`` dtype and shape
+        ``(spatial_ndim, *input.shape)``. Preallocated outputs are filled but
+        omitted from the return value, so the function returns ``None`` when
+        every requested output is preallocated.
+
+    Example:
+        ```pycon
+        >>> import torch
+        >>> import torchmorph as tm
+        >>> x = torch.tensor([[[0, 1, 1, 0]]], device="cuda")
+        >>> tm.euclidean_distance_transform(x)
+        tensor([[[0., 1., 1., 0.]]], device='cuda:0')
+        ```
+    """
     spatial_ndim, return_distances, return_indices = _prepare_distance_transform(
         input,
         return_distances,
@@ -110,7 +146,39 @@ def chamfer_distance_transform(
     distances: Tensor | None = None,
     indices: Tensor | None = None,
 ) -> Tensor | tuple[Tensor, Tensor] | None:
-    """Chamfer distance transform for (B, C, Spatial...) CUDA tensors."""
+    """Compute a chamfer distance to the nearest background point
+
+    Distances are computed independently for each batch and channel. Nonzero
+    input values are foreground and zero values are background.
+
+    Args:
+        input (torch.Tensor): CUDA tensor with shape ``(B, C, Spatial...)``.
+        metric (str): ``"chessboard"`` or ``"taxicab"``. ``"cityblock"`` and
+            ``"manhattan"`` are accepted aliases for ``"taxicab"``.
+        return_distances (bool): Return a newly allocated distance tensor unless
+            ``distances`` is supplied.
+        return_indices (bool): Return a newly allocated nearest-background index
+            tensor unless ``indices`` is supplied.
+        distances (torch.Tensor, optional): Preallocated distance output with
+            the same shape and device as ``input``.
+        indices (torch.Tensor, optional): Preallocated index output with shape
+            ``(spatial_ndim, *input.shape)`` on the input device.
+
+    Returns:
+        torch.Tensor, tuple[torch.Tensor, torch.Tensor], or None: Requested
+        newly allocated outputs. Distances are ``float32`` and indices are
+        ``int32``. Preallocated outputs are filled but omitted from the return
+        value.
+
+    Example:
+        ```pycon
+        >>> import torch
+        >>> import torchmorph as tm
+        >>> x = torch.tensor([[[0, 1, 1, 0]]], device="cuda")
+        >>> tm.chamfer_distance_transform(x, metric="taxicab")
+        tensor([[[0., 1., 1., 0.]]], device='cuda:0')
+        ```
+    """
     _, return_distances, return_indices = _prepare_distance_transform(
         input,
         return_distances,
@@ -147,7 +215,42 @@ def brute_force_distance_transform(
     distances: Tensor | None = None,
     indices: Tensor | None = None,
 ) -> Tensor | tuple[Tensor, Tensor] | None:
-    """Brute-force distance transform for (B, C, Spatial...) CUDA tensors."""
+    """Compute distances to background points by exhaustive search
+
+    This reference-style transform supports Euclidean, taxicab, and chessboard
+    metrics and computes each batch and channel independently.
+
+    Args:
+        input (torch.Tensor): CUDA tensor with shape ``(B, C, Spatial...)``;
+            nonzero values are foreground and zeros are background.
+        metric (str): One of ``"euclidean"``, ``"taxicab"``, or
+            ``"chessboard"``.
+        sampling (float or sequence[float], optional): Positive spatial spacing.
+            A scalar or one-element sequence is broadcast to every axis.
+        return_distances (bool): Return a newly allocated distance tensor unless
+            ``distances`` is supplied.
+        return_indices (bool): Return a newly allocated nearest-background index
+            tensor unless ``indices`` is supplied.
+        distances (torch.Tensor, optional): Preallocated distance output with
+            the same shape and device as ``input``.
+        indices (torch.Tensor, optional): Preallocated index output with shape
+            ``(spatial_ndim, *input.shape)`` on the input device.
+
+    Returns:
+        torch.Tensor, tuple[torch.Tensor, torch.Tensor], or None: Requested
+        newly allocated outputs. Distances are ``float32`` and indices are
+        ``int32``. Preallocated outputs are filled but omitted from the return
+        value.
+
+    Example:
+        ```pycon
+        >>> import torch
+        >>> import torchmorph as tm
+        >>> x = torch.tensor([[[0, 1, 1, 0]]], device="cuda")
+        >>> tm.brute_force_distance_transform(x, metric="euclidean")
+        tensor([[[0., 1., 1., 0.]]], device='cuda:0')
+        ```
+    """
     spatial_ndim, return_distances, return_indices = _prepare_distance_transform(
         input,
         return_distances,
