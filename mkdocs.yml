@@ -1,5 +1,5 @@
 site_name: torchmorph
-site_url: https://intcomp.org/tm/docs/
+site_url: https://intcomp.github.io/tm/
 site_description: GPU-accelerated morphological operations for PyTorch
 repo_url: https://github.com/intcomp/torchmorph
 repo_name: intcomp/torchmorph
