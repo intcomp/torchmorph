@@ -40,6 +40,8 @@ plugins:
             line_length: 88
 
 markdown_extensions:
+  - toc:
+      toc_depth: 3
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.superfences
