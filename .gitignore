@@ -55,6 +55,6 @@ Thumbs.db
 .coverage
 htmlcov/
 
-# Local development documentation
+# Local documentation artifacts
 /CONTEXT.md
-/docs/
+/site/

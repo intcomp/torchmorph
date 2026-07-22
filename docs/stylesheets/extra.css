@@ -1,0 +1,72 @@
+/* Keep API headings compact and let signatures read like Python definitions. */
+.md-typeset .doc-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin: 2.4rem 0 0.75rem;
+  padding-bottom: 0.55rem;
+  border-bottom: 1px solid var(--md-default-fg-color--lightest);
+}
+
+.md-typeset .doc-heading .doc-object-name {
+  color: var(--md-default-fg-color);
+  font-family: var(--md-code-font-family);
+  font-size: 0.82em;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+}
+
+.md-typeset .doc-heading code.doc-symbol {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  padding: 0.2em 0.55em;
+  font-size: 0.62rem;
+  line-height: 1.5;
+}
+
+/* mkdocstrings emits separate signatures as highlighted pre blocks. */
+.md-typeset .doc-object > .highlight,
+.md-typeset .doc-overloads + .highlight {
+  margin: 0 0 1.25rem;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.55rem;
+  background: var(--md-code-bg-color);
+  box-shadow: 0 0.08rem 0.22rem rgb(0 0 0 / 5%);
+  overflow: hidden;
+}
+
+.md-typeset .doc-object > .highlight pre,
+.md-typeset .doc-overloads + .highlight pre {
+  margin: 0;
+  padding: 0.85rem 1rem;
+  background: transparent;
+  overflow-x: auto;
+  font-size: 0.76rem;
+  line-height: 1.55;
+}
+
+.md-typeset .doc-object > .highlight code,
+.md-typeset .doc-overloads + .highlight code {
+  background: transparent;
+}
+
+.md-typeset .doc-contents {
+  padding-left: 1rem;
+  border-left: 0.12rem solid var(--md-default-fg-color--lightest);
+}
+
+@media screen and (max-width: 44.9844em) {
+  .md-typeset .doc-heading {
+    margin-top: 1.8rem;
+  }
+
+  .md-typeset .doc-object > .highlight pre,
+  .md-typeset .doc-overloads + .highlight pre {
+    padding: 0.7rem 0.8rem;
+    font-size: 0.7rem;
+  }
+
+  .md-typeset .doc-contents {
+    padding-left: 0.7rem;
+  }
+}
