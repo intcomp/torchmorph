@@ -38,8 +38,8 @@ distances = solver(source, target, cost)
 
 ## API Reference
 
-- [Distance Transforms](api/distance_transforms.md) — Euclidean, Chamfer, and brute-force distance transforms
-- [Structuring Elements](api/structuring_elements.md) — Multidimensional connectivity structures
-- [Binary Morphology](api/binary_morphology.md) — Binary dilation, erosion, filling, and related operators
-- [Grayscale Morphology](api/grayscale_morphology.md) — Grayscale dilation, erosion, gradients, and top-hats
-- [Optimal Transport](api/optimal_transport.md) — Cost matrices and differentiable Sinkhorn transport
+- [Distance Transforms](distance_transforms.md) — Euclidean, Chamfer, and brute-force distance transforms
+- [Structuring Elements](structuring_elements.md) — Multidimensional connectivity structures
+- [Binary Morphology](binary_morphology.md) — Binary dilation, erosion, filling, and related operators
+- [Grayscale Morphology](grayscale_morphology.md) — Grayscale dilation, erosion, gradients, and top-hats
+- [Optimal Transport](optimal_transport.md) — Cost matrices and differentiable Sinkhorn transport
