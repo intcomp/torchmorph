@@ -55,6 +55,12 @@
   border-left: 0.12rem solid var(--md-default-fg-color--lightest);
 }
 
+.md-typeset .doc-short-anchor {
+  display: block;
+  height: 0;
+  scroll-margin-top: 4.8rem;
+}
+
 @media screen and (max-width: 44.9844em) {
   .md-typeset .doc-heading {
     margin-top: 1.8rem;
