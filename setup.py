@@ -26,6 +26,8 @@ setup(
     version="0.1.0",
     author="Kai Zhao",
     description="CUDA-accelerated morphological transformations for PyTorch",
+    license="MIT",
+    license_files=["LICENSE"],
     url="https://github.com/kaizhao-shu/torchmorph",
     packages=find_packages(),
     python_requires=">=3.12",

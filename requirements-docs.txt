@@ -1,0 +1,5 @@
+-r requirements-test.txt
+mkdocs-material
+mkdocstrings[python]
+pymdown-extensions
+

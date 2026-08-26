@@ -5,11 +5,29 @@ from torch import Tensor, nn
 
 
 def build_cost_matrix(shape, p=2, device=None) -> Tensor:
-    """Pairwise L^p distance matrix between the points of a spatial grid.
+    """Build pairwise distances between points on a spatial grid
 
-    Returns a (d, d) cost matrix for the d flattened grid points of `shape`.
-    Flatten grid-shaped distributions to rows of an (n, d) tensor and pass the
-    result as `cost_matrix` to :class:`SinkhornSolver`.
+    The grid contains ``d = prod(shape)`` points in row-major order. Flatten
+    grid-shaped distributions to ``(n, d)`` before passing this matrix to
+    :class:`SinkhornSolver`.
+
+    Args:
+        shape (sequence[int]): Spatial grid shape.
+        p (float): Norm degree passed to :func:`torch.cdist`.
+        device (torch.device or str, optional): Device for the returned matrix.
+
+    Returns:
+        torch.Tensor: Symmetric ``float32`` cost matrix with shape ``(d, d)``.
+
+    Example:
+        ```pycon
+        >>> import torchmorph as tm
+        >>> cost = tm.build_cost_matrix((2, 3))
+        >>> cost.shape
+        torch.Size([6, 6])
+        >>> cost[0, 1].item()
+        1.0
+        ```
     """
     coords = torch.stack(
         torch.meshgrid([torch.arange(s, device=device) for s in shape], indexing="ij"), dim=-1
@@ -151,19 +169,32 @@ class _SinkhornDistance(torch.autograd.Function):
 
 
 class SinkhornSolver(nn.Module):
-    """Entropy-regularized balanced optimal transport as a differentiable module.
+    """Solve entropy-regularized balanced optimal transport
 
-    forward(source, target, cost_matrix=None) takes two (n, d) batches of
-    histograms sharing one (d, d) cost matrix and returns the (n,) transport
-    distances <P, C>, with K = exp(-C / epsilon). Gradients w.r.t. source and
-    target are the centered dual potentials (envelope theorem), so the module
-    can be used directly as a loss.
+    The module accepts batches of flattened histograms and returns transport
+    costs that are differentiable with respect to both marginals. CUDA
+    ``float32`` inputs use fused kernels; other device and dtype combinations
+    use PyTorch operations. Set ``log_space=True`` for better stability at small
+    regularization values.
 
-    log_space=True runs the iterations entirely in the log domain, which is
-    numerically stable for small epsilon. The implementation is picked from
-    the input automatically: CUDA float32 tensors use the fused kernels,
-    everything else uses pure torch ops (where `threshold` > 0 enables early
-    stopping; the fused kernels always run `max_iter` iterations).
+    Args:
+        epsilon (float): Positive entropy-regularization strength.
+        max_iter (int): Positive maximum number of Sinkhorn iterations.
+        threshold (float): Nonnegative early-stopping tolerance checked by the
+            PyTorch implementation. Fused CUDA kernels always run ``max_iter``.
+        p (float): Norm used by the default one-dimensional cost matrix.
+        log_space (bool): Run Sinkhorn iterations in the log domain.
+
+    Example:
+        ```pycon
+        >>> import torch
+        >>> import torchmorph as tm
+        >>> source = torch.tensor([[1.0, 0.0, 0.0]])
+        >>> target = torch.tensor([[0.0, 0.0, 1.0]])
+        >>> solver = tm.SinkhornSolver(epsilon=1.0, max_iter=200)
+        >>> solver(source, target).shape
+        torch.Size([1])
+        ```
     """
 
     def __init__(self, epsilon=1.0, max_iter=100, threshold=0.0, p=2, log_space=False):
@@ -186,12 +217,42 @@ class SinkhornSolver(nn.Module):
             f"threshold={self.threshold}, log_space={self.log_space}"
         )
 
-    def data_preprocess(self, source, target, cost_matrix: Optional[Tensor] = None):
-        """Validate (n, d) inputs, clamp negatives, and normalize each row to unit mass.
+    def data_preprocess(
+        self,
+        source,
+        target,
+        cost_matrix: Optional[Tensor] = None,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """Validate and normalize batched transport marginals
 
-        All ops are differentiable, so forward gradients flow through the
-        normalization. When `cost_matrix` is None the d bins are treated as
-        points on a line.
+        Negative values are clamped to zero and every row is normalized to unit
+        mass. These operations remain in the autograd graph. If no cost matrix
+        is supplied, the ``d`` bins are treated as points on a line.
+
+        Args:
+            source (torch.Tensor): Floating-point source marginals with shape
+                ``(n, d)``.
+            target (torch.Tensor): Floating-point target marginals with the same
+                shape as ``source``.
+            cost_matrix (torch.Tensor, optional): Shared pairwise cost matrix
+                with shape ``(d, d)``.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor, torch.Tensor]: Normalized source,
+            normalized target, and contiguous cost matrix on the source device
+            and with the source dtype.
+
+        Example:
+            ```pycon
+            >>> import torch
+            >>> import torchmorph as tm
+            >>> solver = tm.SinkhornSolver()
+            >>> a, b, cost = solver.data_preprocess(
+            ...     torch.tensor([[1.0, 1.0]]), torch.tensor([[3.0, 1.0]])
+            ... )
+            >>> a.sum().item(), b.sum().item(), cost.shape
+            (1.0, 1.0, torch.Size([2, 2]))
+            ```
         """
         if source.ndim != 2 or source.shape != target.shape:
             raise ValueError("source and target must be (n, d) tensors of the same shape.")
@@ -212,8 +273,34 @@ class SinkhornSolver(nn.Module):
         target = target / target.sum(dim=-1, keepdim=True).clamp(min=1e-12)
         return source, target, cost_matrix
 
-    def forward(self, source: Tensor, target: Tensor, cost_matrix: Optional[Tensor] = None):
-        """(n,) transport distances between the rows of source and target."""
+    def forward(
+        self,
+        source: Tensor,
+        target: Tensor,
+        cost_matrix: Optional[Tensor] = None,
+    ) -> Tensor:
+        """Compute transport costs between corresponding marginal rows
+
+        Args:
+            source (torch.Tensor): Floating-point source marginals with shape
+                ``(n, d)``.
+            target (torch.Tensor): Floating-point target marginals with shape
+                ``(n, d)``.
+            cost_matrix (torch.Tensor, optional): Shared cost matrix with shape
+                ``(d, d)``. If ``None``, uses a one-dimensional grid cost.
+
+        Returns:
+            torch.Tensor: Differentiable transport costs with shape ``(n,)``.
+
+        Example:
+            ```pycon
+            >>> import torch
+            >>> import torchmorph as tm
+            >>> solver = tm.SinkhornSolver(max_iter=200)
+            >>> solver(torch.ones(2, 4), torch.ones(2, 4)).shape
+            torch.Size([2])
+            ```
+        """
         source, target, cost_matrix = self.data_preprocess(source, target, cost_matrix)
         return _SinkhornDistance.apply(
             source,
@@ -226,17 +313,74 @@ class SinkhornSolver(nn.Module):
         )
 
     @torch.no_grad()
-    def plan(self, source: Tensor, target: Tensor, cost_matrix: Optional[Tensor] = None):
-        """(n, d, d) transport plans, reconstructed in log space."""
+    def plan(
+        self,
+        source: Tensor,
+        target: Tensor,
+        cost_matrix: Optional[Tensor] = None,
+    ) -> Tensor:
+        """Reconstruct transport plans in the log domain
+
+        This method runs without gradient tracking.
+
+        Args:
+            source (torch.Tensor): Floating-point source marginals with shape
+                ``(n, d)``.
+            target (torch.Tensor): Floating-point target marginals with shape
+                ``(n, d)``.
+            cost_matrix (torch.Tensor, optional): Shared cost matrix with shape
+                ``(d, d)``.
+
+        Returns:
+            torch.Tensor: Transport plans with shape ``(n, d, d)``.
+
+        Example:
+            ```pycon
+            >>> import torch
+            >>> import torchmorph as tm
+            >>> solver = tm.SinkhornSolver(max_iter=200)
+            >>> solver.plan(torch.ones(1, 3), torch.ones(1, 3)).shape
+            torch.Size([1, 3, 3])
+            ```
+        """
         source, target, cost_matrix = self.data_preprocess(source, target, cost_matrix)
         log_u, log_v = self._iterate(source, target, cost_matrix)
         return torch.exp(log_u.unsqueeze(-1) - cost_matrix / self.epsilon + log_v.unsqueeze(-2))
 
     @torch.no_grad()
-    def potentials(self, source: Tensor, target: Tensor, cost_matrix: Optional[Tensor] = None):
-        """Centered dual potentials (f, g), each (n, d).
+    def potentials(
+        self,
+        source: Tensor,
+        target: Tensor,
+        cost_matrix: Optional[Tensor] = None,
+    ) -> tuple[Tensor, Tensor]:
+        """Compute centered dual potentials for both marginals
 
-        These are the gradients of the entropic OT cost w.r.t. the marginals.
+        The potentials are the envelope-theorem gradients of the entropic
+        transport cost with respect to normalized marginals. This method runs
+        without gradient tracking.
+
+        Args:
+            source (torch.Tensor): Floating-point source marginals with shape
+                ``(n, d)``.
+            target (torch.Tensor): Floating-point target marginals with shape
+                ``(n, d)``.
+            cost_matrix (torch.Tensor, optional): Shared cost matrix with shape
+                ``(d, d)``.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: Source and target potentials,
+            each with shape ``(n, d)`` and zero mean along the last axis.
+
+        Example:
+            ```pycon
+            >>> import torch
+            >>> import torchmorph as tm
+            >>> solver = tm.SinkhornSolver(max_iter=200)
+            >>> f, g = solver.potentials(torch.ones(1, 3), torch.ones(1, 3))
+            >>> f.shape, g.shape
+            (torch.Size([1, 3]), torch.Size([1, 3]))
+            ```
         """
         source, target, cost_matrix = self.data_preprocess(source, target, cost_matrix)
         log_u, log_v = self._iterate(source, target, cost_matrix)
