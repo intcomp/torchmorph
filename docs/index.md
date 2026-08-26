@@ -1,5 +1,7 @@
 # torchmorph
 
+[![arXiv](https://img.shields.io/badge/arXiv-2608.24738-b31b1b.svg)](https://arxiv.org/abs/2608.24738)
+
 GPU-accelerated morphological image processing operations for PyTorch.
 
 ## Installation
