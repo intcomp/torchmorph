@@ -1,6 +1,7 @@
 # TorchMorph
 
 [![arXiv](https://img.shields.io/badge/arXiv-2608.24738-b31b1b.svg)](https://arxiv.org/abs/2608.24738)
+[![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Paper-FFD21E.svg)](https://huggingface.co/papers/2608.24738)
 
 > ⚡ CUDA-Accelerated, Batch-Parallel Morphological Transformations for PyTorch
 
