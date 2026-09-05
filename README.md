@@ -77,3 +77,21 @@ if torch.cuda.is_available():
 else:
     print("CUDA not available; install verified for import only.")
 ```
+
+---
+
+## 📚 Citation
+
+If you use TorchMorph in your research, please cite:
+
+```bibtex
+@misc{zhao2026torchmorph,
+      title={TorchMorph: CUDA-accelerated Morphological Transforms},
+      author={Kai Zhao},
+      year={2026},
+      eprint={2608.24738},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV},
+      url={https://arxiv.org/abs/2608.24738},
+}
+```
