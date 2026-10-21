@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 import torch
 
-from torchmorph import SinkhornSolver, build_cost_matrix
 import torchmorph.optimal_transport as ot_impl
+from torchmorph import SinkhornSolver, build_cost_matrix
 
 try:
     import ot

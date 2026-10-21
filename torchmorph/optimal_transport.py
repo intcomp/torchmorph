@@ -52,7 +52,9 @@ def _run_fused(launch, max_iter, device, inputs, outputs, signature):
 
         stream = torch.cuda.current_stream()
         key = (
-            device, stream.cuda_stream, signature,
+            device,
+            stream.cuda_stream,
+            signature,
             tuple((tuple(t.shape), t.dtype, t.stride()) for t in (*inputs, *outputs)),
         )
         entry = getattr(_GRAPH_CACHE, "entry", None)
@@ -101,7 +103,11 @@ def _scaling_iterations(a, b, cost_matrix, epsilon, max_iter, threshold):
         v = torch.ones_like(b)
         _run_fused(
             lambda ins, outs, k: _C.sinkhorn_fastiter(*ins, *outs, k),
-            max_iter, a.device, (a, b, K, K_T), (u, v), "scaling",
+            max_iter,
+            a.device,
+            (a, b, K, K_T),
+            (u, v),
+            "scaling",
         )
         return u.log(), v.log()
 
@@ -129,8 +135,11 @@ def _log_iterations(a, b, cost_matrix, epsilon, max_iter, threshold):
         log_v = torch.zeros_like(b)
         _run_fused(
             lambda ins, outs, k: _C.sinkhorn_logiter(*ins, *outs, k, epsilon),
-            max_iter, a.device, (log_a, log_b, cost_matrix, cost_T),
-            (log_u, log_v), ("log", epsilon),
+            max_iter,
+            a.device,
+            (log_a, log_b, cost_matrix, cost_T),
+            (log_u, log_v),
+            ("log", epsilon),
         )
         return log_u, log_v
 
