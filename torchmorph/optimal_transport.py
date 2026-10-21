@@ -1,3 +1,4 @@
+from threading import local
 from typing import Optional
 
 import torch
@@ -31,41 +32,63 @@ def _transpose_or_self(matrix: Tensor) -> Tensor:
     return matrix if torch.equal(matrix, matrix.mT) else matrix.mT.contiguous()
 
 
-_GRAPH_MIN_ITER = 100  # below this, plain launches beat the graph-capture setup cost
+_GRAPH_MIN_ITER = 100
 _GRAPH_CHUNK = 25
+_GRAPH_CACHE = local()  # one workspace per thread; changing configuration replaces it
 
 
-def _run_fused(launch, max_iter, device):
-    """Run `launch(k)`, which enqueues k in-place Sinkhorn iterations, max_iter times in total.
+def _run_fused(launch, max_iter, device, inputs, outputs, signature):
+    """Replay a cached chunk on fixed buffers, then copy out this call's result.
 
-    Long runs are launch-latency-bound (two tiny kernels per iteration), so a
-    chunk of iterations is captured into a CUDA graph once and replayed. The
-    iterations are fixed-point steps on ping-pong buffers, so a fallback that
-    runs extra iterations is always safe.
+    `launch(inputs, outputs, k)` enqueues k in-place iterations. Only the most
+    recent configuration is cached per thread, with streams isolated by the
+    cache key. Warmup uses scratch state and never counts as solver iterations.
+    Errors propagate instead of silently rerunning an already modified state.
     """
-    if max_iter < _GRAPH_MIN_ITER or torch.cuda.is_current_stream_capturing():
-        launch(max_iter)
-        return
-    try:
-        with torch.cuda.device(device):
-            # Warm up on a side stream (required before capture), doing the
-            # first chunk of real iterations in the process.
+    with torch.cuda.device(device):
+        if max_iter < _GRAPH_MIN_ITER or torch.cuda.is_current_stream_capturing():
+            launch(inputs, outputs, max_iter)
+            return
+
+        stream = torch.cuda.current_stream()
+        key = (
+            device,
+            stream.cuda_stream,
+            signature,
+            tuple((tuple(t.shape), t.dtype, t.stride()) for t in (*inputs, *outputs)),
+        )
+        entry = getattr(_GRAPH_CACHE, "entry", None)
+        if entry is None or entry[0] != key:
+            # Release the old workspace before allocating its replacement.
+            _GRAPH_CACHE.entry = None
+            entry = None
+            static_inputs = tuple(t.detach().clone() for t in inputs)
+            static_outputs = tuple(t.clone() for t in outputs)
             side_stream = torch.cuda.Stream()
-            side_stream.wait_stream(torch.cuda.current_stream())
+            side_stream.wait_stream(stream)
             with torch.cuda.stream(side_stream):
-                launch(_GRAPH_CHUNK)
-            torch.cuda.current_stream().wait_stream(side_stream)
+                launch(static_inputs, static_outputs, _GRAPH_CHUNK)
+            stream.wait_stream(side_stream)
 
             graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(graph):
-                launch(_GRAPH_CHUNK)
-            for _ in range(max_iter // _GRAPH_CHUNK - 1):
-                graph.replay()
-            remainder = max_iter % _GRAPH_CHUNK
-            if remainder:
-                launch(remainder)
-    except RuntimeError:
-        launch(max_iter)  # graphs unavailable; extra iterations are harmless
+            with torch.cuda.graph(graph, stream=side_stream):
+                launch(static_inputs, static_outputs, _GRAPH_CHUNK)
+            _GRAPH_CACHE.entry = (key, graph, static_inputs, static_outputs)
+        else:
+            _, graph, static_inputs, static_outputs = entry
+            for dst, src in zip(static_inputs, inputs):
+                dst.copy_(src)
+
+        # Discard warmup or the previous call's solution before any replay.
+        for dst, src in zip(static_outputs, outputs):
+            dst.copy_(src)
+        for _ in range(max_iter // _GRAPH_CHUNK):
+            graph.replay()
+        remainder = max_iter % _GRAPH_CHUNK
+        if remainder:
+            launch(static_inputs, static_outputs, remainder)
+        for dst, src in zip(outputs, static_outputs):
+            dst.copy_(src)
 
 
 def _scaling_iterations(a, b, cost_matrix, epsilon, max_iter, threshold):
@@ -78,7 +101,14 @@ def _scaling_iterations(a, b, cost_matrix, epsilon, max_iter, threshold):
         K_T = _transpose_or_self(K)
         u = torch.ones_like(a)
         v = torch.ones_like(b)
-        _run_fused(lambda k: _C.sinkhorn_fastiter(a, b, K, K_T, u, v, k), max_iter, a.device)
+        _run_fused(
+            lambda ins, outs, k: _C.sinkhorn_fastiter(*ins, *outs, k),
+            max_iter,
+            a.device,
+            (a, b, K, K_T),
+            (u, v),
+            "scaling",
+        )
         return u.log(), v.log()
 
     u = torch.ones_like(a)
@@ -104,11 +134,12 @@ def _log_iterations(a, b, cost_matrix, epsilon, max_iter, threshold):
         log_u = torch.zeros_like(a)
         log_v = torch.zeros_like(b)
         _run_fused(
-            lambda k: _C.sinkhorn_logiter(
-                log_a, log_b, cost_matrix, cost_T, log_u, log_v, k, epsilon
-            ),
+            lambda ins, outs, k: _C.sinkhorn_logiter(*ins, *outs, k, epsilon),
             max_iter,
             a.device,
+            (log_a, log_b, cost_matrix, cost_T),
+            (log_u, log_v),
+            ("log", epsilon),
         )
         return log_u, log_v
 
@@ -164,6 +195,9 @@ class SinkhornSolver(nn.Module):
     the input automatically: CUDA float32 tensors use the fused kernels,
     everything else uses pure torch ops (where `threshold` > 0 enables early
     stopping; the fused kernels always run `max_iter` iterations).
+
+    Long fused runs reuse a CUDA graph with fixed scratch buffers. Each thread
+    caches only its most recent device, stream, shape, and kernel configuration.
     """
 
     def __init__(self, epsilon=1.0, max_iter=100, threshold=0.0, p=2, log_space=False):

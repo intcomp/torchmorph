@@ -1,7 +1,12 @@
+from contextlib import nullcontext
+from types import SimpleNamespace
+from unittest.mock import Mock
+
 import numpy as np
 import pytest
 import torch
 
+import torchmorph.optimal_transport as ot_impl
 from torchmorph import SinkhornSolver, build_cost_matrix
 
 try:
@@ -187,6 +192,96 @@ def test_fused_short_run_without_cuda_graph_matches_cpu(log_space):
     cpu_distance = solver(source, target)
     cuda_distance = solver(source.cuda(), target.cuda())
     assert torch.allclose(cuda_distance.cpu(), cpu_distance, rtol=1e-4, atol=1e-5)
+
+
+@pytest.mark.parametrize("log_space", LOG_SPACE)
+@pytest.mark.parametrize("method", ["forward", "plan", "potentials"])
+def test_graph_reuses_buffers_with_new_inputs(log_space, method, monkeypatch):
+    """New tensors, costs and budgets must not replay stale data or recapture."""
+    _require_cuda()
+    monkeypatch.setattr(ot_impl, "_GRAPH_CACHE", SimpleNamespace())
+    graph = Mock(wraps=torch.cuda.CUDAGraph)
+    monkeypatch.setattr(torch.cuda, "CUDAGraph", graph)
+    solver = SinkhornSolver(epsilon=1.5, log_space=log_space)
+    solve = getattr(solver, method)
+
+    for seed, max_iter in enumerate((100, 101, 124, 125, 200), start=1500):
+        solver.max_iter = max_iter
+        source = _make_positive((3, 6), device="cpu", seed=seed)
+        target = _make_positive((3, 6), device="cpu", seed=seed + 100)
+        cost = _make_positive((6, 6), device="cpu", seed=seed + 200)
+        expected = solve(source, target, cost)
+        actual = solve(source.cuda(), target.cuda(), cost.cuda())
+        actual_parts = actual if isinstance(actual, tuple) else (actual,)
+        expected_parts = expected if isinstance(expected, tuple) else (expected,)
+        for cuda_value, cpu_value in zip(actual_parts, expected_parts):
+            assert torch.allclose(cuda_value.cpu(), cpu_value, rtol=1e-4, atol=1e-4)
+        assert graph.call_count == 1
+
+
+def test_graph_iteration_count_and_output_lifetime(monkeypatch):
+    """Warmup and previous replays must not affect this call or earlier outputs."""
+    _require_cuda()
+    monkeypatch.setattr(ot_impl, "_GRAPH_CACHE", SimpleNamespace())
+    saved = []
+
+    def launch(inputs, outputs, k):
+        outputs[0].add_(inputs[0], alpha=k)
+
+    for value, max_iter in enumerate((99, 100, 101, 124, 125, 200), start=1):
+        inputs = (torch.full((2,), float(value), device="cuda"),)
+        outputs = (torch.zeros_like(inputs[0]),)
+        ot_impl._run_fused(launch, max_iter, inputs[0].device, inputs, outputs, "count")
+        saved.append((outputs[0], value * max_iter))
+    for result, expected in saved:
+        assert torch.equal(result, torch.full_like(result, expected))
+
+
+def test_graph_rebuilds_for_configuration_and_stream(monkeypatch):
+    _require_cuda()
+    monkeypatch.setattr(ot_impl, "_GRAPH_CACHE", SimpleNamespace())
+    graph = Mock(wraps=torch.cuda.CUDAGraph)
+    monkeypatch.setattr(torch.cuda, "CUDAGraph", graph)
+
+    def launch(inputs, outputs, k):
+        outputs[0].add_(inputs[0], alpha=k)
+
+    def run(size, signature):
+        inputs = (torch.ones(size, device="cuda"),)
+        outputs = (torch.zeros_like(inputs[0]),)
+        ot_impl._run_fused(launch, 100, inputs[0].device, inputs, outputs, signature)
+        assert torch.equal(outputs[0], torch.full_like(outputs[0], 100))
+
+    run(2, ("log", 1.5))
+    run(3, ("log", 1.5))
+    run(3, ("log", 2.0))
+    run(3, "scaling")
+    assert graph.call_count == 4
+    with torch.cuda.stream(torch.cuda.Stream()):
+        run(3, "scaling")
+    assert graph.call_count == 5
+
+
+@pytest.mark.parametrize("stage", ["warmup", "capture", "replay"])
+def test_graph_errors_propagate_without_retry(stage, monkeypatch):
+    """An error in any graph stage must never trigger a full-budget retry."""
+    monkeypatch.setattr(ot_impl, "_GRAPH_CACHE", SimpleNamespace())
+    stream = SimpleNamespace(cuda_stream=1, wait_stream=lambda _: None)
+    monkeypatch.setattr(torch.cuda, "device", lambda _: nullcontext())
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    monkeypatch.setattr(torch.cuda, "current_stream", lambda: stream)
+    monkeypatch.setattr(torch.cuda, "Stream", lambda: stream)
+    monkeypatch.setattr(torch.cuda, "stream", lambda _: nullcontext())
+    graph = SimpleNamespace(replay=Mock(side_effect=RuntimeError("replay failed")))
+    monkeypatch.setattr(torch.cuda, "CUDAGraph", lambda: graph)
+    monkeypatch.setattr(torch.cuda, "graph", lambda *args, **kwargs: nullcontext())
+    error = RuntimeError(f"{stage} failed")
+    effects = {"warmup": [error], "capture": [None, error], "replay": [None, None]}
+    launch = Mock(side_effect=effects[stage])
+    inputs, outputs = (torch.ones(2),), (torch.zeros(2),)
+    with pytest.raises(RuntimeError, match=f"{stage} failed"):
+        ot_impl._run_fused(launch, 101, "cuda:0", inputs, outputs, "error")
+    assert [call.args[2] for call in launch.call_args_list] == [25] * len(effects[stage])
 
 
 @pytest.mark.parametrize("log_space", LOG_SPACE)
