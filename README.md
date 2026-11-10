@@ -85,13 +85,13 @@ else:
 If you use TorchMorph in your research, please cite:
 
 ```bibtex
-@misc{zhao2026torchmorph,
-      title={TorchMorph: CUDA-accelerated Morphological Transforms},
-      author={Kai Zhao},
-      year={2026},
-      eprint={2608.24738},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV},
-      url={https://arxiv.org/abs/2608.24738},
+@article{TorchMorph,
+title = {TorchMorph: CUDA-accelerated Morphological Transforms},
+journal = {Pattern Recognition Letters},
+year = {2026},
+issn = {0167-8655},
+doi = {https://doi.org/10.1016/j.patrec.2026.11.008},
+url = {https://www.sciencedirect.com/science/article/pii/S0167865526004253},
+author = {Yuhan Deng and Yiping Mao and Kai Zhao}
 }
 ```
